@@ -28,7 +28,7 @@ from typing import Any, Dict, Optional
 
 from flask import Flask
 
-from ai_paper_review import bundled_db_dir, bundled_db_paths, default_db_path
+from ai_paper_review import bundled_db_dir, default_db_path
 from ai_paper_review.llm.config import load_config
 
 
