@@ -64,15 +64,28 @@ from importlib.resources import files
 from pathlib import Path
 
 
-def default_db_path() -> Path:
-    """Path to the bundled comparch_reviewer_db.md shipped with the package.
+def bundled_db_dir() -> Path:
+    """Directory containing all bundled reviewer databases.
 
     Works both when the package is installed (from site-packages) and
     when running from a source checkout via `pip install -e .`.
     """
-    return Path(str(files("ai_paper_review.data").joinpath("comparch_reviewer_db.md")))
+    # Resolve via a known file so the Traversable → Path conversion is safe.
+    return Path(str(files("ai_paper_review.database").joinpath("comparch_reviewer_db.md"))).parent
+
+
+def default_db_path() -> Path:
+    """Path to the bundled comparch_reviewer_db.md (backwards-compat helper)."""
+    return bundled_db_dir() / "comparch_reviewer_db.md"
+
+
+def bundled_db_paths() -> list[Path]:
+    """All *_reviewer_db.md files shipped with the package, sorted by name."""
+    return sorted(bundled_db_dir().glob("*_reviewer_db.md"))
 
 
 __all__ = [
+    "bundled_db_dir",
+    "bundled_db_paths",
     "default_db_path",
 ]

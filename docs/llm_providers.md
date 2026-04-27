@@ -13,8 +13,8 @@ Each provider has a different setup flow — API key, PAT, SDK install, or local
 | Google Gemini | `google_api` | Direct | Create an API key at <https://aistudio.google.com/apikey> → `api_keys.google_api` or `GEMINI_API_KEY` (falls back to `GOOGLE_API_KEY`). |
 | xAI Grok | `xai_api` | Direct (grok-4-class models) | Create an API key at <https://console.x.ai/> → `api_keys.xai_api` or `XAI_API_KEY`. Base URL is hardcoded to `https://api.x.ai/v1`. |
 | GitHub Models | `github_api` | Text | Create a **fine-grained** GitHub Personal Access Token at <https://github.com/settings/tokens> (no repo scope needed) → `api_keys.github_api` or `GITHUB_TOKEN` (falls back to `GITHUB_PAT`). Browse the catalog at <https://github.com/marketplace/models>. |
-| GitHub Copilot SDK | `copilot_sdk` | Text | `pip install github-copilot-sdk` (already in `environment.yml`), then `gh auth login` once. **No API key needed** — the SDK inherits the Copilot CLI's local auth. Works alongside VSCode Copilot. |
 | Claude Agent SDK | `claude_sdk` | Direct | `pip install claude-agent-sdk` (already in `environment.yml`), then `claude /login` once via the [Claude Code CLI](https://docs.claude.com/en/docs/claude-code). **No API key needed** — the SDK inherits the CLI's login (shared with VSCode/JetBrains Claude extensions). Routes through your Claude Pro/Max/Team subscription. |
+| GitHub Copilot SDK | `copilot_sdk` | Text | `pip install github-copilot-sdk` (already in `environment.yml`), then `gh auth login` once. **No API key needed** — the SDK inherits the Copilot CLI's local auth. Works alongside VSCode Copilot. |
 | OpenAI-compatible | `openai_compatible_api` | Text | Point at any OpenAI-protocol endpoint via `base_url` under `llm_review` (e.g. Ollama `http://localhost:11434/v1`, vLLM / llama.cpp, Together, Groq, DeepSeek, Fireworks, Azure-style proxies). API key is **optional** when the base_url looks local; otherwise use `api_keys.openai_compatible_api` or `OPENAI_API_KEY`. |
 
 ## Config file
@@ -28,8 +28,8 @@ cp config.example.yaml config.yaml
 ```yaml
 llm_review:                      # required
   provider: anthropic_api        # or: openai_api | google_api | xai_api | github_api |
-                                 #     copilot_sdk | claude_sdk | openai_compatible_api
-  model: claude-sonnet-4-5-20250929
+                                 #     claude_sdk | copilot_sdk | openai_compatible_api
+  model: claude-sonnet-4-6
   # base_url: http://localhost:11434/v1       # Ollama example (openai_compatible_api)
   # base_url: https://<resource>.openai.azure.com/openai/deployments/<name>  # Azure OpenAI example
 
@@ -134,6 +134,61 @@ For any provider whose `api_keys.<name>` entry is blank (or missing), the system
 
 This means you can keep secrets entirely out of `config.yaml` if you prefer — set the env var in your shell, and only use `config.yaml` for provider/model selection.
 
+## Claude Agent SDK setup
+
+The `claude_sdk` provider uses the official [Claude Agent Python SDK](https://github.com/anthropics/claude-agent-sdk-python). It talks to [Claude Code](https://docs.claude.com/en/docs/claude-code)'s locally-installed CLI, inheriting whatever login state that CLI already has. The same login covers the CLI, the VSCode/JetBrains Claude extensions, and this provider — no API key, no billing setup inside the app.
+
+**Zero-friction setup** (installing via `environment.yml` already covers the Python SDK):
+
+```bash
+conda env create -f environment.yml   # installs the Python SDK
+conda activate ai-paper-review
+# One-time: install the Claude Code CLI if you don't already have it.
+# (See https://docs.claude.com/en/docs/claude-code for your platform.)
+claude /login                         # opens a browser for Anthropic OAuth
+```
+
+**Manual install** (outside conda):
+
+```bash
+pip install claude-agent-sdk
+claude /login
+```
+
+> The PyPI package is `claude-agent-sdk` but it imports as `from claude_agent_sdk import query, ClaudeAgentOptions`. The GitHub repo is `anthropics/claude-agent-sdk-python`; the `-python` suffix identifies the language, it's not part of the PyPI name.
+
+**Then in `config.yaml`:**
+
+```yaml
+llm_review:
+  provider: claude_sdk
+  model: claude-sonnet-4-6   # any model available on your Claude plan
+```
+
+No `api_keys` entry needed.
+
+**Routes through your Claude subscription, not the API.** `claude_sdk` uses the same request budget as Claude Code itself — your Pro/Max/Team plan covers it. Rate limits and model availability are defined by the plan, not by an API-key tier.
+
+**How it works internally** — `ai_paper_review.llm.clients.claude.ClaudeSDKClient` wraps the SDK's async `query()` generator in a synchronous `complete()` method. Each call constructs a `ClaudeAgentOptions` with the system prompt + model, iterates the streamed messages, and concatenates the text from every block carrying a `.text` attribute. Duck-typing rather than `isinstance` checks keeps us forward-compatible across minor SDK version bumps.
+
+**Troubleshooting** — if the provider card shows red after `claude /login`:
+
+```bash
+# Confirm the SDK is importable from the same Python you run the server with:
+python -c "from claude_agent_sdk import query; print('OK')"
+
+# Confirm the CLI is authenticated:
+claude /status
+```
+
+If the SDK import fails, `pip install claude-agent-sdk` landed in a different Python environment than the web server. Activate the correct env before installing. The server logs a diagnostic line with `sys.executable` on the first failed probe — check the server log.
+
+**Caveats:**
+
+- `claude_sdk` is in active development — the SDK's class hierarchy may shift; this client duck-types on `.content` / `.text` attributes to stay resilient.
+- Each reviewer call opens its own `asyncio.run()` (the paper review pipeline dispatches up to `max_concurrent` reviewers in parallel). The Claude Code CLI handles concurrent sessions fine in practice; if you hit throttling, lower `max_concurrent` to 1 or 2 in `config.yaml`.
+- Unlike the `anthropic_api` provider (which goes to `api.anthropic.com` with a per-request bill), `claude_sdk` charges against your Claude subscription. Quota behavior mirrors the Claude Code CLI itself.
+
 ## GitHub Models setup
 
 GitHub Models is a public catalog of LLMs hosted by GitHub (GPT-4o, Llama, Phi, Mistral, etc.). Any GitHub account can generate a PAT to call it — no Copilot subscription needed.
@@ -235,61 +290,6 @@ conda install conda-forge::github-copilot-sdk
 - The `model` field for this provider is informational only — the SDK uses whatever model Copilot CLI is currently configured with.
 - For OpenTelemetry tracing, install with the telemetry extra: `pip install github-copilot-sdk[telemetry]`.
 
-## Claude Agent SDK setup
-
-The `claude_sdk` provider uses the official [Claude Agent Python SDK](https://github.com/anthropics/claude-agent-sdk-python). It talks to [Claude Code](https://docs.claude.com/en/docs/claude-code)'s locally-installed CLI, inheriting whatever login state that CLI already has. The same login covers the CLI, the VSCode/JetBrains Claude extensions, and this provider — no API key, no billing setup inside the app.
-
-**Zero-friction setup** (installing via `environment.yml` already covers the Python SDK):
-
-```bash
-conda env create -f environment.yml   # installs the Python SDK
-conda activate ai-paper-review
-# One-time: install the Claude Code CLI if you don't already have it.
-# (See https://docs.claude.com/en/docs/claude-code for your platform.)
-claude /login                         # opens a browser for Anthropic OAuth
-```
-
-**Manual install** (outside conda):
-
-```bash
-pip install claude-agent-sdk
-claude /login
-```
-
-> The PyPI package is `claude-agent-sdk` but it imports as `from claude_agent_sdk import query, ClaudeAgentOptions`. The GitHub repo is `anthropics/claude-agent-sdk-python`; the `-python` suffix identifies the language, it's not part of the PyPI name.
-
-**Then in `config.yaml`:**
-
-```yaml
-llm_review:
-  provider: claude_sdk
-  model: claude-sonnet-4-5-20250929   # any model available on your Claude plan
-```
-
-No `api_keys` entry needed.
-
-**Routes through your Claude subscription, not the API.** `claude_sdk` uses the same request budget as Claude Code itself — your Pro/Max/Team plan covers it. Rate limits and model availability are defined by the plan, not by an API-key tier.
-
-**How it works internally** — `ai_paper_review.llm.clients.claude.ClaudeSDKClient` wraps the SDK's async `query()` generator in a synchronous `complete()` method. Each call constructs a `ClaudeAgentOptions` with the system prompt + model, iterates the streamed messages, and concatenates the text from every block carrying a `.text` attribute. Duck-typing rather than `isinstance` checks keeps us forward-compatible across minor SDK version bumps.
-
-**Troubleshooting** — if the provider card shows red after `claude /login`:
-
-```bash
-# Confirm the SDK is importable from the same Python you run the server with:
-python -c "from claude_agent_sdk import query; print('OK')"
-
-# Confirm the CLI is authenticated:
-claude /status
-```
-
-If the SDK import fails, `pip install claude-agent-sdk` landed in a different Python environment than the web server. Activate the correct env before installing. The server logs a diagnostic line with `sys.executable` on the first failed probe — check the server log.
-
-**Caveats:**
-
-- `claude_sdk` is in active development — the SDK's class hierarchy may shift; this client duck-types on `.content` / `.text` attributes to stay resilient.
-- Each reviewer call opens its own `asyncio.run()` (the paper review pipeline dispatches up to `max_concurrent` reviewers in parallel). The Claude Code CLI handles concurrent sessions fine in practice; if you hit throttling, lower `max_concurrent` to 1 or 2 in `config.yaml`.
-- Unlike the `anthropic_api` provider (which goes to `api.anthropic.com` with a per-request bill), `claude_sdk` charges against your Claude subscription. Quota behavior mirrors the Claude Code CLI itself.
-
 ## Per-stage providers and models
 
 The paper review stage and the validation stage (human-review conversion + alignment) can use different providers and models. Helpful when you want premium quality for reviewing but cheap inference for the high-volume validation comparison:
@@ -297,7 +297,7 @@ The paper review stage and the validation stage (human-review conversion + align
 ```yaml
 llm_review:
   provider: anthropic_api
-  model:    claude-opus-4-1-20250805     # used to run each paper reviewer
+  model:    claude-opus-4-7              # used to run each paper reviewer
 
 llm_validation:                          # optional — inherits llm_review when absent
   provider: openai_api                   # can even be a different provider
@@ -318,7 +318,7 @@ Under the hood it sets `PAPER_REVIEW_REVIEW_PROVIDER_OVERRIDE` and `PAPER_REVIEW
 
 ## Web UI provider picker
 
-The web UI's **Model** page at `/model` shows all seven providers as cards in a **Provider availability** grid:
+The web UI's **Model** page at `/model` shows all eight providers as cards in a **Provider availability** grid:
 
 - **Green card** — the provider has a working credential source (API key, SDK installed, or local server reachable). The card shows a green dot, a badge (`key configured` / `SDK ready` / `local server`), and the credential source in muted text (e.g. `ENV: ANTHROPIC_API_KEY` or `config.yaml`).
 - **Red card** — credential missing or the SDK isn't installed. The badge reads `no key` / `SDK missing` / `no endpoint`, and the muted text explains why (e.g. `export ANTHROPIC_API_KEY=... or add api_keys.anthropic_api`).

@@ -21,6 +21,7 @@ from ai_paper_review.review.reviewer_db import (
 )
 
 from .app import (
+    BUNDLED_DB_DIR,
     DATABASES_DIR,
     DEFAULT_DB_PATH,
     WORKDIR,
@@ -28,12 +29,14 @@ from .app import (
     logger,
 )
 
+_BUNDLED_PREFIX = "__bundled__:"
+
 
 def list_available_databases() -> List[Dict[str, Any]]:
-    """Discover all reviewer DBs (bundled default + user uploads under
-    ``DATABASES_DIR``). The ``is_default`` flag distinguishes the bundled
-    DB from uploads — templates render it as a "default" badge in place
-    of the Delete button.
+    """Discover all reviewer DBs (bundled defaults + user uploads under
+    ``DATABASES_DIR``). Bundled DBs use ``__bundled__:<filename>`` IDs and
+    carry ``can_delete: False``; uploads use the bare filename as ID.
+    ``__default__`` remains a backwards-compat alias for the comparch DB.
     """
     out: List[Dict[str, Any]] = []
 
@@ -42,22 +45,25 @@ def list_available_databases() -> List[Dict[str, Any]]:
             first_line = path.read_text().splitlines()[0].lstrip("# ").strip()
         except Exception:
             first_line = ""
-        title = first_line or path.stem
-        return f"{title}  ({path.name})"
+        return f"{first_line or path.stem}  ({path.name})"
 
-    try:
-        default_reviewers = parse_reviewer_db(str(DEFAULT_DB_PATH))
-        out.append({
-            "id": "__default__",
-            "label": _make_label(DEFAULT_DB_PATH),
-            "path": str(DEFAULT_DB_PATH),
-            "n_reviewers": len(default_reviewers),
-            "is_default": True,
-            "can_delete": False,
-        })
-    except Exception as e:
-        logger.exception("Bundled default DB failed to parse: %s", e)
+    # Bundled databases — every *_reviewer_db.md in the package directory.
+    for p in sorted(BUNDLED_DB_DIR.glob("*_reviewer_db.md")):
+        try:
+            n = len(parse_reviewer_db(str(p)))
+            db_id = "__default__" if p == DEFAULT_DB_PATH else f"{_BUNDLED_PREFIX}{p.name}"
+            out.append({
+                "id": db_id,
+                "label": _make_label(p),
+                "path": str(p),
+                "n_reviewers": n,
+                "is_default": True,
+                "can_delete": False,
+            })
+        except Exception as e:
+            logger.exception("Bundled DB %s failed to parse: %s", p.name, e)
 
+    # User-uploaded databases.
     if DATABASES_DIR.exists():
         for p in sorted(DATABASES_DIR.glob("*.md")):
             try:
@@ -76,11 +82,22 @@ def list_available_databases() -> List[Dict[str, Any]]:
 
 
 def resolve_database_path(database_id: str) -> Path:
-    """``__default__`` → bundled DB. Anything else is a filename inside
-    ``DATABASES_DIR``. Path-traversal characters are rejected.
+    """Resolve a database ID to a filesystem path.
+
+    ``__default__`` and ``__bundled__:<filename>`` resolve to bundled DBs.
+    Anything else is treated as a filename inside ``DATABASES_DIR``.
+    Path-traversal characters are rejected in all cases.
     """
     if not database_id or database_id == "__default__":
         return DEFAULT_DB_PATH
+    if database_id.startswith(_BUNDLED_PREFIX):
+        name = database_id[len(_BUNDLED_PREFIX):]
+        if "/" in name or "\\" in name or ".." in name:
+            raise ValueError(f"Invalid bundled database id: {database_id!r}")
+        p = BUNDLED_DB_DIR / name
+        if not p.exists():
+            raise FileNotFoundError(f"Bundled database not found: {name}")
+        return p
     if "/" in database_id or "\\" in database_id or ".." in database_id:
         raise ValueError(f"Invalid database id: {database_id!r}")
     p = DATABASES_DIR / database_id
@@ -138,8 +155,8 @@ def databases_list():
 def databases_download_template():
     """Serve the bundled YAML config (comparch_reviewer_cfg.yaml) as a
     downloadable template for building a new reviewer database."""
-    from ai_paper_review import data as _data_pkg
-    tpl = Path(_data_pkg.__file__).parent / "comparch_reviewer_cfg.yaml"
+    from ai_paper_review import database as _database_pkg
+    tpl = Path(_database_pkg.__file__).parent / "comparch_reviewer_cfg.yaml"
     if not tpl.exists():
         abort(404)
     return send_file(str(tpl), as_attachment=True,
@@ -198,7 +215,7 @@ def databases_upload():
 @app.post("/database/<name>/delete")
 def databases_delete(name: str):
     """Remove a user-uploaded database. The bundled default is protected."""
-    if name == "__default__" or "/" in name or "\\" in name or ".." in name:
+    if name == "__default__" or name.startswith(_BUNDLED_PREFIX) or "/" in name or "\\" in name or ".." in name:
         flash("Refusing to delete that.")
         return redirect(url_for("databases_list"))
     p = DATABASES_DIR / name

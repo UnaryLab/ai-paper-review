@@ -1,0 +1,650 @@
+# Reviewer-database configuration for Machine Learning and AI.
+#
+# Generate the runtime markdown with:
+#
+#     ai-paper-review-generate-db --config mlai_reviewer_cfg.yaml \
+#                                 --out mlai_reviewer_db.md
+#
+# The same 20 personas as comparch are included explicitly so the validation
+# calibration pipeline works without changes.
+
+field: "machine learning and AI"
+version: "1.0"
+
+domains:
+  - id: "D1"
+    name: "Deep Learning Theory & Foundations"
+    short: "dl_theory"
+    description: "Neural network theory, optimization, generalization, and architectural design principles."
+    venues: "NeurIPS, ICML, ICLR, AISTATS, JMLR"
+    keywords:
+      - "backpropagation"
+      - "stochastic gradient descent"
+      - "Adam"
+      - "AdamW"
+      - "loss landscape"
+      - "generalization"
+      - "overfitting"
+      - "regularization"
+      - "batch normalization"
+      - "layer normalization"
+      - "dropout"
+      - "residual connections"
+      - "skip connections"
+      - "attention mechanism"
+      - "self-attention"
+      - "multi-head attention"
+      - "activation functions"
+      - "initialization"
+      - "learning rate schedule"
+      - "weight decay"
+      - "momentum"
+      - "implicit bias"
+      - "sharpness-aware minimization"
+      - "neural tangent kernel"
+      - "double descent"
+      - "lottery ticket hypothesis"
+
+  - id: "D2"
+    name: "Large Language Models & NLP"
+    short: "llm_nlp"
+    description: "Pre-training, fine-tuning, alignment, and deployment of large language models."
+    venues: "ACL, EMNLP, NAACL, NeurIPS, ICML, ICLR"
+    keywords:
+      - "large language model"
+      - "LLM"
+      - "GPT"
+      - "BERT"
+      - "T5"
+      - "transformer"
+      - "instruction tuning"
+      - "RLHF"
+      - "DPO"
+      - "alignment"
+      - "prompting"
+      - "few-shot learning"
+      - "in-context learning"
+      - "chain-of-thought"
+      - "retrieval-augmented generation"
+      - "RAG"
+      - "fine-tuning"
+      - "LoRA"
+      - "tokenization"
+      - "perplexity"
+      - "hallucination"
+      - "factuality"
+      - "context length"
+      - "scaling laws"
+      - "emergent abilities"
+
+  - id: "D3"
+    name: "Computer Vision"
+    short: "cv"
+    description: "Visual recognition, detection, generation, and understanding with deep learning."
+    venues: "CVPR, ICCV, ECCV, NeurIPS, ICML, ICLR"
+    keywords:
+      - "convolutional neural network"
+      - "CNN"
+      - "vision transformer"
+      - "ViT"
+      - "CLIP"
+      - "object detection"
+      - "instance segmentation"
+      - "semantic segmentation"
+      - "image classification"
+      - "self-supervised learning"
+      - "contrastive learning"
+      - "data augmentation"
+      - "image generation"
+      - "video understanding"
+      - "3D vision"
+      - "depth estimation"
+      - "optical flow"
+      - "zero-shot recognition"
+      - "open-vocabulary detection"
+      - "foundation model"
+      - "SAM"
+      - "DINO"
+      - "masked image modeling"
+
+  - id: "D4"
+    name: "Reinforcement Learning"
+    short: "rl"
+    description: "Sequential decision-making, policy optimization, and agent learning."
+    venues: "NeurIPS, ICML, ICLR, JMLR, AAMAS, CoRL"
+    keywords:
+      - "reinforcement learning"
+      - "policy gradient"
+      - "Q-learning"
+      - "deep Q-network"
+      - "DQN"
+      - "proximal policy optimization"
+      - "PPO"
+      - "soft actor-critic"
+      - "SAC"
+      - "model-based RL"
+      - "offline RL"
+      - "multi-agent RL"
+      - "reward modeling"
+      - "exploration"
+      - "exploitation"
+      - "inverse RL"
+      - "imitation learning"
+      - "reward shaping"
+      - "Markov decision process"
+      - "temporal difference"
+      - "Monte Carlo tree search"
+      - "hierarchical RL"
+      - "sim-to-real"
+
+  - id: "D5"
+    name: "Generative Models"
+    short: "generative"
+    description: "Deep generative modeling including diffusion models, flows, VAEs, and GANs."
+    venues: "NeurIPS, ICML, ICLR, CVPR, ICCV, ECCV"
+    keywords:
+      - "diffusion model"
+      - "DDPM"
+      - "score matching"
+      - "denoising diffusion"
+      - "stable diffusion"
+      - "latent diffusion"
+      - "text-to-image"
+      - "flow matching"
+      - "normalizing flow"
+      - "variational autoencoder"
+      - "VAE"
+      - "generative adversarial network"
+      - "GAN"
+      - "image synthesis"
+      - "video generation"
+      - "audio generation"
+      - "FID"
+      - "IS"
+      - "CLIP score"
+      - "classifier-free guidance"
+      - "consistency model"
+      - "rectified flow"
+
+  - id: "D6"
+    name: "Graph & Relational Learning"
+    short: "graph"
+    description: "Learning on graphs, relational data, and structured representations."
+    venues: "NeurIPS, ICML, ICLR, KDD, WWW, ICDM"
+    keywords:
+      - "graph neural network"
+      - "GNN"
+      - "message passing"
+      - "graph convolutional network"
+      - "GCN"
+      - "graph attention network"
+      - "GAT"
+      - "graph transformer"
+      - "knowledge graph"
+      - "link prediction"
+      - "node classification"
+      - "graph classification"
+      - "heterogeneous graph"
+      - "temporal graph"
+      - "molecular graph"
+      - "graph generation"
+      - "geometric deep learning"
+      - "equivariance"
+      - "invariance"
+      - "Weisfeiler-Leman"
+      - "subgraph isomorphism"
+      - "graph isomorphism network"
+
+  - id: "D7"
+    name: "Efficient ML & AutoML"
+    short: "efficient_ml"
+    description: "Model compression, efficient architectures, and automated machine learning."
+    venues: "NeurIPS, ICML, ICLR, MLSys, AutoML Workshop, ECCV"
+    keywords:
+      - "model compression"
+      - "quantization"
+      - "pruning"
+      - "knowledge distillation"
+      - "neural architecture search"
+      - "NAS"
+      - "hardware-aware NAS"
+      - "parameter-efficient fine-tuning"
+      - "LoRA"
+      - "adapter"
+      - "prefix tuning"
+      - "mixture of experts"
+      - "sparse model"
+      - "efficient transformer"
+      - "linear attention"
+      - "post-training quantization"
+      - "INT8"
+      - "INT4"
+      - "AutoML"
+      - "hyperparameter optimization"
+      - "Bayesian optimization"
+      - "early exit"
+      - "speculative decoding"
+
+  - id: "D8"
+    name: "ML Safety, Robustness & Fairness"
+    short: "safety"
+    description: "Adversarial robustness, fairness, uncertainty quantification, interpretability, and alignment."
+    venues: "NeurIPS, ICML, ICLR, FAccT, AIES, SafeAI Workshop, USENIX Security"
+    keywords:
+      - "adversarial examples"
+      - "adversarial training"
+      - "certified robustness"
+      - "fairness"
+      - "bias"
+      - "demographic parity"
+      - "equalized odds"
+      - "uncertainty quantification"
+      - "calibration"
+      - "out-of-distribution detection"
+      - "distribution shift"
+      - "domain generalization"
+      - "interpretability"
+      - "explainability"
+      - "feature attribution"
+      - "SHAP"
+      - "concept bottleneck"
+      - "alignment"
+      - "red-teaming"
+      - "jailbreak"
+      - "toxicity"
+      - "differential privacy"
+      - "membership inference"
+
+  - id: "D9"
+    name: "Multimodal Learning"
+    short: "multimodal"
+    description: "Models that jointly learn from vision, language, audio, and other modalities."
+    venues: "NeurIPS, ICML, ICLR, CVPR, ACL, EMNLP, MM"
+    keywords:
+      - "multimodal learning"
+      - "vision-language model"
+      - "VLM"
+      - "CLIP"
+      - "LLaVA"
+      - "image captioning"
+      - "visual question answering"
+      - "VQA"
+      - "visual grounding"
+      - "audio-visual learning"
+      - "speech recognition"
+      - "text-to-speech"
+      - "cross-modal retrieval"
+      - "multimodal fusion"
+      - "cross-attention"
+      - "multimodal alignment"
+      - "GPT-4V"
+      - "Gemini"
+      - "modality gap"
+      - "contrastive multimodal"
+      - "multimodal generation"
+      - "video-language model"
+
+  - id: "D10"
+    name: "Scientific & Applied ML"
+    short: "sci_ml"
+    description: "Machine learning applied to science, healthcare, climate, and engineering."
+    venues: "NeurIPS, ICML, ICLR, Nature, Nature Methods, MICCAI, KDD"
+    keywords:
+      - "protein structure prediction"
+      - "AlphaFold"
+      - "drug discovery"
+      - "molecular property prediction"
+      - "physics-informed neural network"
+      - "PINN"
+      - "neural operator"
+      - "scientific machine learning"
+      - "climate modeling"
+      - "materials science"
+      - "medical imaging"
+      - "genomics"
+      - "single-cell analysis"
+      - "electronic health records"
+      - "clinical NLP"
+      - "differential equations"
+      - "operator learning"
+      - "surrogate model"
+      - "foundation model for science"
+      - "virtual screening"
+      - "molecular dynamics"
+      - "PDE"
+
+personas:
+  - name: "Novelty Hunter"
+    slug: "novelty"
+    focus: "Novelty, originality, and incremental vs. fundamental contribution"
+    style: "Skeptical; distinguishes genuine advances from repackaged prior work."
+    common_concerns: "Incremental fine-tuning presented as a new method; missing comparison to closest prior art; contributions list padded with engineering effort."
+    priorities:
+      - "Is the core idea actually new, or a combination of known techniques?"
+      - "Are the claimed contributions explicit and independently verifiable?"
+      - "Is the delta over the 2-3 closest prior works quantified on the same benchmarks?"
+
+  - name: "Methodology Critic"
+    slug: "methodology"
+    focus: "Soundness of experimental design, evaluation protocol, and hyperparameter fairness"
+    style: "Meticulous; treats every design choice as a potential source of bias."
+    common_concerns: "Baselines not tuned to the same budget; hyperparameters cherry-picked for the proposed method; evaluation protocol differs from cited baselines."
+    priorities:
+      - "Are baselines tuned with the same hyperparameter budget as the proposed method?"
+      - "Is the evaluation protocol (splits, metrics, aggregation) consistent with the literature?"
+      - "Could confounding factors (model size, data, compute) explain the gains?"
+
+  - name: "Literature Scholar"
+    slug: "literature"
+    focus: "Coverage and accuracy of related work in ML/AI"
+    style: "Encyclopedic; identifies missing citations and mischaracterizations by memory."
+    common_concerns: "Missing concurrent or foundational work; citing only convenient baselines; misrepresenting what prior methods claim."
+    priorities:
+      - "Are foundational papers and the most recent competitors cited?"
+      - "Are concurrent preprints or workshop papers acknowledged?"
+      - "Are prior methods' claims represented accurately, not strawmanned?"
+
+  - name: "Empirical Evaluator"
+    slug: "empirical"
+    focus: "Breadth, diversity, and realism of empirical evaluation"
+    style: "Data-obsessed; wants evaluation across many settings, not a single curated benchmark."
+    common_concerns: "Results on a single benchmark; evaluation limited to easy or familiar settings; missing out-of-domain or stress tests."
+    priorities:
+      - "Are results reported across multiple datasets and task variants?"
+      - "Are both standard and challenging (OOD, low-resource) settings included?"
+      - "Are end-to-end metrics reported alongside component-level numbers?"
+
+  - name: "Theorist"
+    slug: "theory"
+    focus: "Theoretical grounding, convergence analysis, and generalization bounds"
+    style: "Formal; wants proofs, bounds, or at minimum principled justifications."
+    common_concerns: "Hand-wavy theoretical motivation; assumptions not stated; theory section decoupled from experiments."
+    priorities:
+      - "Are theoretical claims (convergence, sample complexity, expressivity) proven or bounded?"
+      - "Are the assumptions explicit and realistic for the experimental settings?"
+      - "Do the theoretical predictions align with the empirical results?"
+
+  - name: "Reproducibility Champion"
+    slug: "reproducibility"
+    focus: "Reproducibility, compute transparency, and artifact quality"
+    style: "Trust-but-verify; asks whether another group with the same compute budget could replicate the results."
+    common_concerns: "No code or model release; compute budget unreported; seeds and environment not fixed."
+    priorities:
+      - "Are code, model weights, and training configs publicly released?"
+      - "Are compute cost (GPU-hours, hardware type) and random seeds fully reported?"
+      - "Are the key results reproducible without access to proprietary data or hardware?"
+
+  - name: "Clarity & Presentation Editor"
+    slug: "clarity"
+    focus: "Writing quality, figure clarity, notation, and argument structure"
+    style: "Reader-focused; great ideas fail when buried in opaque prose or overloaded figures."
+    common_concerns: "Key contribution buried in the paper body; figures require reading the caption twice; inconsistent notation across sections."
+    priorities:
+      - "Is the core contribution stated clearly in the abstract and introduction?"
+      - "Are figures self-explanatory with appropriate axis labels and legends?"
+      - "Is notation consistent and defined before use?"
+
+  - name: "Benchmark & Contamination Auditor"
+    slug: "benchmark"
+    focus: "Benchmark integrity, data leakage, and fairness of comparisons"
+    style: "Vigilant; probes for train/test contamination and benchmark overfitting."
+    common_concerns: "Test data leaked into pretraining corpora; benchmark saturated so gains are noise; custom splits that favor the proposed method."
+    priorities:
+      - "Is there evidence of train/test contamination in the training data?"
+      - "Are performance gains meaningful given benchmark saturation and measurement variance?"
+      - "Are evaluation splits identical to those used by all baseline methods?"
+
+  - name: "Dataset & Data Quality Auditor"
+    slug: "data"
+    focus: "Dataset curation, annotation quality, and data bias"
+    style: "Scrutinizing; believes the dataset defines the ceiling of what can be learned."
+    common_concerns: "Annotation methodology underdescribed; label noise unquantified; demographic or domain bias in the dataset unacknowledged."
+    priorities:
+      - "Is the dataset curation process described in sufficient detail to reproduce?"
+      - "Are annotation quality, inter-annotator agreement, and error rates reported?"
+      - "Are known biases or limitations of the dataset acknowledged and mitigated?"
+
+  - name: "Statistical Rigor Auditor"
+    slug: "stats"
+    focus: "Statistical significance, variance reporting, and multiple-comparison integrity"
+    style: "Rigorous; treats a single-run number without confidence intervals as unacceptable."
+    common_concerns: "No error bars or variance over seeds; no significance testing; gains within noise floor; multiple-comparison correction missing."
+    priorities:
+      - "Are results averaged over multiple runs with variance or confidence intervals?"
+      - "Are gains statistically significant given the reported variance?"
+      - "Is multiple-hypothesis testing accounted for when many ablations are reported?"
+
+  - name: "Generalization & Robustness Tester"
+    slug: "generalization"
+    focus: "Out-of-distribution generalization, robustness to distribution shift, and stress testing"
+    style: "Adversarial; assumes the benchmark setting is the easy case."
+    common_concerns: "Method works only on the training distribution; no OOD evaluation; robustness to domain shift, label noise, or input perturbation not assessed."
+    priorities:
+      - "Is the method evaluated on out-of-distribution or domain-shifted data?"
+      - "Does performance degrade gracefully under label noise or input corruptions?"
+      - "Are failure modes or edge cases identified and analyzed?"
+
+  - name: "Compute & Efficiency Analyst"
+    slug: "efficiency"
+    focus: "Training cost, inference latency, parameter count, and compute-performance trade-offs"
+    style: "Cost-conscious; accuracy gains at much larger compute are not free wins."
+    common_concerns: "Accuracy gains at much larger compute budget; inference latency not reported; FLOPs comparison omitted; training cost not disclosed."
+    priorities:
+      - "Are accuracy gains compared at equal FLOPs or parameter budgets?"
+      - "Is inference latency or throughput reported on realistic hardware?"
+      - "Is the training cost (GPU-hours, energy) disclosed and justified?"
+
+  - name: "Ablation & Analysis Advocate"
+    slug: "ablation"
+    focus: "Attribution of gains through ablations and diagnostic analysis"
+    style: "Analytical; wants to know which component actually drives performance."
+    common_concerns: "No ablation study; ablations only compare full method vs. nothing; no analysis of why or when the method works."
+    priorities:
+      - "Is there an ablation that isolates the contribution of each proposed component?"
+      - "Do the ablations cover realistic intermediate baselines, not just full vs. nothing?"
+      - "Is there diagnostic analysis (attention maps, probing, error analysis) explaining the mechanism?"
+
+  - name: "Ethics, Fairness & Societal Impact Reviewer"
+    slug: "ethics"
+    focus: "Bias, fairness, dual-use risk, and broader societal implications"
+    style: "Conscientious; asks who could be harmed and whether the authors have considered it."
+    common_concerns: "Fairness across demographic groups not evaluated; dual-use or misuse potential not discussed; environmental cost of large-scale training ignored."
+    priorities:
+      - "Are fairness metrics reported across demographic or subgroup splits?"
+      - "Are potential harms, dual-use risks, or misuse scenarios discussed?"
+      - "Is the environmental cost (carbon, energy) of training acknowledged?"
+
+  - name: "Scaling Laws Analyst"
+    slug: "scaling"
+    focus: "Scaling behavior with data, compute, and model size"
+    style: "Empirical-theoretic; wants to know if gains hold at larger scale or collapse."
+    common_concerns: "Results only at one scale; no scaling curve; gains from a small model may not transfer to production-scale models."
+    priorities:
+      - "Are results reported at multiple scales (model size, data, compute)?"
+      - "Do performance gains persist or diminish as scale increases?"
+      - "Is there a predictive scaling curve or principled extrapolation to larger scale?"
+
+  - name: "Negative Results Advocate"
+    slug: "negative"
+    focus: "Honest reporting of failure modes, limitations, and what does not work"
+    style: "Balanced; believes a paper that hides failures is less trustworthy than one that surfaces them."
+    common_concerns: "Limitations section is one sentence; no analysis of when or why the method fails; cherry-picked qualitative examples."
+    priorities:
+      - "Are failure cases shown and analyzed alongside successes?"
+      - "Is the limitations section substantive and specific?"
+      - "Are there settings where the proposed method underperforms the baseline?"
+
+  - name: "Deployment & Production Pragmatist"
+    slug: "deployment"
+    focus: "Real-world deployability, serving cost, and engineering feasibility"
+    style: "Experienced; asks whether the system could run at production scale tomorrow."
+    common_concerns: "Assumes unlimited inference budget; ignores serving latency and memory; no discussion of model updates or monitoring in deployment."
+    priorities:
+      - "Is inference latency and memory footprint acceptable for real-world serving?"
+      - "Does the method require proprietary data or infrastructure to deploy?"
+      - "Are operational concerns (model versioning, drift detection, fallback) discussed?"
+
+  - name: "Security & Privacy Auditor"
+    slug: "sec_privacy"
+    focus: "Adversarial robustness, privacy leakage, and model security"
+    style: "Adversarial; assumes an attacker will find and exploit the weakest assumption."
+    common_concerns: "No adversarial evaluation; privacy risks (memorization, membership inference) unaddressed; threat model missing or vague."
+    priorities:
+      - "Is the model evaluated against adversarial inputs or prompt injection?"
+      - "Are privacy risks (training data memorization, membership inference) assessed?"
+      - "Is the threat model for any security claims explicit and realistic?"
+
+  - name: "Cross-Disciplinary Thinker"
+    slug: "cross_disc"
+    focus: "Connections to adjacent ML subfields, cognitive science, statistics, and other disciplines"
+    style: "Broad; surfaces links the authors may not have noticed and flags reinvention."
+    common_concerns: "Reinvents ideas from statistics or cognitive science without attribution; ignores relevant ML subfield literature; narrow framing that misses cross-cutting impact."
+    priorities:
+      - "Does the work engage with relevant ideas from adjacent communities (statistics, neuroscience, etc.)?"
+      - "Are there cross-subfield implications (e.g. a CV technique that generalizes to NLP)?"
+      - "Could techniques from a neighboring field strengthen or simplify the approach?"
+
+  - name: "Visionary & Future-Work Critic"
+    slug: "vision"
+    focus: "Long-term impact, research direction, and open problems"
+    style: "Forward-looking; asks whether this line of work is worth a decade of follow-up."
+    common_concerns: "Future work section is vague; no articulation of open problems this paper creates; incremental contribution with no clear research trajectory."
+    priorities:
+      - "Does the paper identify concrete open problems it creates or sharpens?"
+      - "Is the proposed direction likely to have lasting impact beyond this result?"
+      - "Are the proposed future steps specific and actionable?"
+
+validation_attribution:
+  category_vocab:
+    - novelty
+    - methodology
+    - related work
+    - evaluation
+    - theory
+    - reproducibility
+    - clarity
+    - benchmark
+    - data
+    - statistics
+    - generalization
+    - efficiency
+    - ablation
+    - ethics
+    - scaling
+    - limitations
+    - deployment
+    - security
+    - cross-disciplinary
+    - vision
+
+  category_to_persona:
+    novelty:               Novelty Hunter
+    originality:           Novelty Hunter
+    contribution:          Novelty Hunter
+    incremental:           Novelty Hunter
+
+    methodology:           Methodology Critic
+    experimental design:   Methodology Critic
+    baseline:              Methodology Critic
+    rigor:                 Methodology Critic
+    protocol:              Methodology Critic
+
+    related work:          Literature Scholar
+    literature:            Literature Scholar
+    citations:             Literature Scholar
+    prior work:            Literature Scholar
+
+    evaluation:            Empirical Evaluator
+    experiments:           Empirical Evaluator
+    empirical:             Empirical Evaluator
+    benchmarks:            Empirical Evaluator
+
+    theory:                Theorist
+    convergence:           Theorist
+    bounds:                Theorist
+    proof:                 Theorist
+    analysis:              Theorist
+
+    reproducibility:       Reproducibility Champion
+    artifact:              Reproducibility Champion
+    replication:           Reproducibility Champion
+    code release:          Reproducibility Champion
+
+    clarity:               Clarity & Presentation Editor
+    writing:               Clarity & Presentation Editor
+    presentation:          Clarity & Presentation Editor
+    figure:                Clarity & Presentation Editor
+    notation:              Clarity & Presentation Editor
+
+    benchmark:             Benchmark & Contamination Auditor
+    contamination:         Benchmark & Contamination Auditor
+    leakage:               Benchmark & Contamination Auditor
+    data leakage:          Benchmark & Contamination Auditor
+
+    data:                  Dataset & Data Quality Auditor
+    dataset:               Dataset & Data Quality Auditor
+    annotation:            Dataset & Data Quality Auditor
+    data quality:          Dataset & Data Quality Auditor
+
+    statistics:            Statistical Rigor Auditor
+    variance:              Statistical Rigor Auditor
+    significance:          Statistical Rigor Auditor
+    error bars:            Statistical Rigor Auditor
+    confidence:            Statistical Rigor Auditor
+
+    generalization:        Generalization & Robustness Tester
+    robustness:            Generalization & Robustness Tester
+    ood:                   Generalization & Robustness Tester
+    distribution shift:    Generalization & Robustness Tester
+
+    efficiency:            Compute & Efficiency Analyst
+    compute:               Compute & Efficiency Analyst
+    latency:               Compute & Efficiency Analyst
+    flops:                 Compute & Efficiency Analyst
+    cost:                  Compute & Efficiency Analyst
+
+    ablation:              Ablation & Analysis Advocate
+    attribution:           Ablation & Analysis Advocate
+    component:             Ablation & Analysis Advocate
+
+    ethics:                Ethics, Fairness & Societal Impact Reviewer
+    fairness:              Ethics, Fairness & Societal Impact Reviewer
+    bias:                  Ethics, Fairness & Societal Impact Reviewer
+    societal:              Ethics, Fairness & Societal Impact Reviewer
+    dual-use:              Ethics, Fairness & Societal Impact Reviewer
+
+    scaling:               Scaling Laws Analyst
+    scale:                 Scaling Laws Analyst
+    scaling law:           Scaling Laws Analyst
+
+    limitations:           Negative Results Advocate
+    failure:               Negative Results Advocate
+    negative:              Negative Results Advocate
+
+    deployment:            Deployment & Production Pragmatist
+    production:            Deployment & Production Pragmatist
+    serving:               Deployment & Production Pragmatist
+    operational:           Deployment & Production Pragmatist
+
+    security:              Security & Privacy Auditor
+    privacy:               Security & Privacy Auditor
+    adversarial:           Security & Privacy Auditor
+    memorization:          Security & Privacy Auditor
+    threat:                Security & Privacy Auditor
+
+    cross-disciplinary:    Cross-Disciplinary Thinker
+    interdisciplinary:     Cross-Disciplinary Thinker
+    cross-cutting:         Cross-Disciplinary Thinker
+
+    vision:                Visionary & Future-Work Critic
+    future work:           Visionary & Future-Work Critic
+    impact:                Visionary & Future-Work Critic
+
+  sub_rating_to_persona:
+    soundness:      Methodology Critic
+    presentation:   Clarity & Presentation Editor
+    contribution:   Novelty Hunter
+    clarity:        Clarity & Presentation Editor
+    significance:   Novelty Hunter
+    technical:      Methodology Critic
+    reproducibility: Reproducibility Champion

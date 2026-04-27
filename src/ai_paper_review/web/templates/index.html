@@ -33,14 +33,17 @@
       <h2>1. Choose a reviewer database</h2>
       <p class="hint">
         Each database is a pool of reviewer personas tailored to a specific field.
-        To build a new database, see
+        Two databases are bundled by default:
+        <strong>Computer Architecture</strong> and
+        <strong>Machine Learning &amp; AI</strong>.
+        To build a new database for a different field, see
         <a href="{{ url_for('databases_list') }}">Database</a>.
       </p>
       <select name="database" id="database-select" style="min-width: 28rem;">
         {% for db in available_databases %}
           <option value="{{ db.id }}"
                   data-n-reviewers="{{ db.n_reviewers }}"
-                  {% if db.is_default %}selected{% endif %}>
+                  {% if db.id == '__default__' %}selected{% endif %}>
             {{ db.label }} — {{ db.n_reviewers }} reviewers
           </option>
         {% endfor %}

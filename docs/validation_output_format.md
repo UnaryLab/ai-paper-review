@@ -34,23 +34,30 @@ Validation compares a human review (N comments) against an AI review (M comments
 
 **Inputs to the alignment call:**
 
-- Human comments: each labeled `H1`, `H2`, … with their `summary` + `description` + `section_reference`.
-- AI comments: each labeled `A1`, `A2`, … (or the reviewer-prefixed `R042-C3` form) with the same three fields.
-- Instructions that define three verdicts per row:
+- Human comments: each labeled with its real comment ID (e.g. `Reviewer_qFvT-C1`) — the `id` field from the flattened comment list. When no ID is available the fallback `H{n}` is used.
+- AI comments: each labeled with its real comment ID (e.g. `R042-C3`) from the AI review file.
+- A single batch prompt asking for every `(human_id, ai_id)` pair, with instructions to define three verdicts per row based on the best similarity score:
   - **same** — best-match similarity ≥ 0.65
   - **partial** — best-match similarity ≥ 0.35
   - **missed** — best-match similarity < 0.35
 
 **Output of the alignment call** (expected format; the parser tolerates wide drift):
 
-```markdown
-| H | A1  | A2  | A3  | ... | AM  | verdict | best_match |
-|---|-----|-----|-----|-----|-----|---------|------------|
-| H1 | 0.82 | 0.31 | 0.15 | ... | 0.08 | same    | A1         |
-| H2 | 0.12 | 0.18 | 0.09 | ... | 0.04 | missed  | —          |
-| H3 | 0.48 | 0.21 | 0.52 | ... | 0.14 | partial | A3         |
+```
+## Similarity scores
+
+<human_id> | <ai_id> | <score>
+<human_id> | <ai_id> | <score>
+...
+
+## Ranked human comments
+
+1. <human_id> — best_match=<ai_id> sim=<score>
+2. <human_id> — best_match=<ai_id> sim=<score>
 ...
 ```
+
+One pipe-separated line per `(human, AI)` pair — `N × M` lines total. The parser converts these into a float matrix; verdicts are assigned per row from each human comment's best-matching AI column.
 
 The parser has a four-tier resolver chain that accepts:
 1. Exact AI-id match (`A3`, `R042-C3`)
@@ -81,50 +88,57 @@ A single markdown file, rendered top-to-bottom for humans. Section order:
 **Paper:** <title or paper_id>
 **Venue:** <venue or 'n/a'>
 
-## Semantic Comparison (LLM)          ← optional; shown only if the run
-                                       produced an llm_comparison object
-<natural-language summary + per-comment verdicts with ✅ / 🟡 / ⚠️ / ❌
- icons, then the LLM's view of what was missed and what was extra>
+## Semantic Comparison (LLM)
+<batch-alignment summary: N hits, M misses, F false alarms, number of
+ pairs parsed. In batch mode `matches`, `missed`, and `extras` are always
+ empty; the model used is noted. Per-comment icon-coded verdicts (✅ / 🟡 /
+ ⚠️ / ❌) appear only when the llm_comparison carries non-empty `matches`.>
 
 ## Summary Metrics
-| Metric                   | Value |
-|--------------------------|-------|
-| Actual human comments    |  N    |
-| AI comments              |  M    |
-| Hits (actual ↔ AI match) |  K    |
-| Misses (no AI match)     |  N-K  |
-| False alarms (no actual) |  F    |
-| Recall                   | K/N   |
+| Metric                   | Value   |
+|--------------------------|---------|
+| Actual human comments    |  N      |
+| AI comments              |  M      |
+| Hits (actual ↔ AI match) |  K      |
+| Misses (no AI match)     |  N-K    |
+| False alarms (no actual) |  F      |
+| Recall                   | K/N     |
 | Precision                | (M-F)/M |
-| F1                       | ...   |
-| Severity-weighted recall | ...   |
+| F1                       | ...     |
+| Severity-weighted recall | ...     |
 
-## Per-persona performance
-<per-persona hit/miss counts, precision and recall per persona, median
- topic-relevance score — shows which reviewers pulled their weight on
- this paper and which missed the point>
+## Hits — Actual Comments the AI Caught
+<every aligned (human, AI) pair with similarity score and both summaries;
+ supporting AI reviewers (other AI comments above partial threshold) listed>
 
-## Sub-rating attributions        ← optional; present when the human review
-                                    supplied `## Sub-Ratings` section
+## Misses — Actual Comments the AI Failed to Raise
+<every human comment with best AI similarity below partial threshold;
+ expected AI persona (from DB's category_to_persona map) annotated>
 
-## Hits
-<every aligned (human, AI) pair with similarity score and both summaries>
+## False Alarms — AI Comments Not Raised by Any Human
+<AI comments that matched no human comment above partial — capped at 20,
+ with a note on how many more were omitted>
 
-## Misses
-<every human comment that had no AI match above the `partial` threshold,
- with the best-match AI comment and its similarity for context>
+## Per-Persona Performance (Selected Reviewers)
+| Reviewer ID | Persona | Comments emitted | Actual issues helped catch | False alarms | Noise ratio |
+<one row per selected AI reviewer; noise ratio = false_alarms / comments_emitted>
 
-## False alarms
-<AI comments that matched no human comment above `partial` — i.e.
- hallucinations or off-target critiques>
+## Sub-Rating Signal Attribution   ← conditional; only when the human review
+                                     contains low sub-ratings (e.g. OpenReview
+                                     Soundness / Presentation / Contribution)
+| Reviewer | Sub-rating | Value | Expected persona | Persona selected? | Caught anything? | Verdict |
 
-## Calibration suggestions
-<grouped by failure mode: under-coverage (missed categories), over-firing
- (false-alarm-heavy personas), persona-floor gaps (major-severity misses
- attributable to a persona that wasn't selected), etc.>
+## Failure Mode Breakdown
+- Selection failures (right persona not selected): N
+- Prompt failures (persona selected but missed issue): N
+- Sub-rating signals (low human sub-rating not caught by expected persona): N
+- Uncovered categories: (list of category → miss count pairs)
+
+## Calibration Suggestions for the Reviewer Database
+<one ### #N [type] block per suggestion; type is one of:
+ strengthen_persona_prompt / selection_policy_adjustment /
+ reduce_persona_noise / sub_rating_signal / topical_gap>
 ```
-
-All section order here matches the web UI's result-page rendering so the two stay aligned.
 
 ---
 
@@ -134,18 +148,18 @@ The structured form of the report, designed for programmatic cross-paper aggrega
 
 ```json
 {
-  "paper_id":           "a-stable-id-or-title-slug",
-  "metrics":            { "...see below..." },
-  "summary":            { "...see below..." },
-  "persona_stats":      [ {"persona": "...", "recall": 0.42, ...}, ... ],
-  "miss_attributions":  [ {"actual_id": "H3", "attributed_persona": "...", ...}, ... ],
+  "paper_id":                "a-stable-id-or-title-slug",
+  "metrics":                 { "...see metrics shape below..." },
+  "summary":                 { "...see summary shape below..." },
+  "persona_stats":           [ {"reviewer_id": "R042", "persona": "...", "comments_emitted": 7, ...}, ... ],
+  "miss_attributions":       [ {"actual_comment": "...", "expected_persona": "...", "failure_mode": "...", ...}, ... ],
   "sub_rating_attributions": [ ... ],
-  "suggestions":        [ {"kind": "...", "persona": "...", "...": "..."}, ... ],
-  "llm_comparison":     { "summary": "...", "matches": [...], "missed": [...], "extras": [...], "llm_model": "..." }
+  "suggestions":             [ {"type": "strengthen_persona_prompt", "target_persona": "...", ...}, ... ],
+  "llm_comparison":          { "summary": "...", "matches": [], "missed": [], "extras": [], "llm_model": "..." }
 }
 ```
 
-`llm_comparison` is `null` when the batch-similarity call didn't produce a narrative comparison (e.g. on embedding-only runs); otherwise it carries the same three icon-coded lists that appear in the report's "Semantic Comparison" section.
+`llm_comparison` is present whenever the batch alignment ran (always in current builds). In batch mode, `matches`, `missed`, and `extras` are always empty lists — the useful content is in `summary`, which holds a one-line text description of the batch alignment results (hit/miss/false-alarm counts and the number of similarity pairs parsed). `llm_comparison` is absent from the delta only when no alignment ran at all (run errored before Stage 3).
 
 ### `metrics` shape
 
@@ -169,29 +183,70 @@ All numerical fields are rounded to 3 decimal places. Counts are integers.
 
 ### `summary` shape
 
-Aggregate rollup of the calibration findings. Fields include `n_suggestions`, `top_failure_mode`, and `strongest_persona` — the exact keys depend on the calibration stage's current version; consumers should treat `summary` as a dict of loosely-typed metadata and fall back on `persona_stats` + `suggestions` for the authoritative data.
-
-### `suggestions` shape
-
-Each suggestion is one of several kinds. All share:
+Aggregate counts of the calibration findings for this paper:
 
 ```json
 {
-  "kind":    "strengthen" | "quiet" | "add_keyword" | "add_persona_floor" | ...,
-  "persona": "Methodology Critic",
-  "rationale": "Human reviewer flagged a missing baseline comparison ...",
-  "...":     "kind-specific fields"
+  "selection_failures":   3,
+  "prompt_failures":      2,
+  "uncovered_categories": {"evaluation": 2, "reproducibility": 1},
+  "sub_rating_signals":   1
 }
 ```
 
-Kind-specific fields:
+- `selection_failures` — misses where the expected persona was not among the selected reviewers.
+- `prompt_failures` — misses where the expected persona was selected but still missed the issue.
+- `uncovered_categories` — dict of `{category: miss_count}` for categories that appear in misses.
+- `sub_rating_signals` — count of low human sub-ratings whose expected AI persona either wasn't selected or didn't catch the corresponding weakness.
 
-- `strengthen` — `category`, `example_misses` (list of `actual_id`): this persona repeatedly missed issues in this category; strengthen the prompt for the category.
-- `quiet` — `category`, `example_false_alarms`: this persona is firing false alarms in this category; tone down the prompt's emphasis.
-- `add_keyword` — `keywords` (list): the selector missed this persona on this paper despite relevance — add these keywords to the domain.
-- `add_persona_floor` — `reason`: a major miss was attributable to a persona that wasn't selected; consider requiring this persona in future runs on similar papers.
+### `persona_stats` shape
 
-The cross-paper aggregation module (`ai_paper_review.aggregation`) groups these by `(persona, kind, category)` across N papers and only emits a recommendation when the same grouping shows up in ≥ `min_support` papers (default 2). See [Aggregation](aggregation.md) for the full usage doc.
+One entry per selected AI reviewer:
+
+```json
+{
+  "reviewer_id":                  "R042",
+  "persona":                      "Methodology Critic",
+  "comments_emitted":             7,
+  "actual_comments_helped_catch": 3,
+  "false_alarms":                 2,
+  "noise_ratio":                  0.286
+}
+```
+
+`noise_ratio` = `false_alarms / comments_emitted`; `null` when `comments_emitted` is 0.
+
+### `miss_attributions` shape
+
+One entry per missed human comment:
+
+```json
+{
+  "actual_comment":           "The paper does not compare against ...",
+  "severity":                 "major",
+  "category":                 "evaluation",
+  "expected_persona":         "Methodology Critic",
+  "expected_persona_selected": true,
+  "failure_mode":             "prompt_failure",
+  "note":                     "Persona 'Methodology Critic' WAS selected but still missed ..."
+}
+```
+
+`failure_mode` is one of `"selection_failure"`, `"prompt_failure"`, or `"uncategorized"` (when the category has no persona mapping in the reviewer DB). `expected_persona` is `null` for uncategorized misses.
+
+### `suggestions` shape
+
+Each suggestion has a `type` field plus type-specific fields:
+
+| `type` | Key fields |
+|--------|-----------|
+| `strengthen_persona_prompt` | `target_persona`, `scope`, `rationale`, `example_misses` (list of comment snippets), `prompt_patch_hint` |
+| `selection_policy_adjustment` | `missing_personas_in_selection` (list), `rationale`, `fix_hint` |
+| `reduce_persona_noise` | `target_persona`, `noise_ratio`, `comments_emitted`, `rationale`, `prompt_patch_hint` |
+| `sub_rating_signal` | `target_persona`, `sub_rating`, `support` (count), `reviewers` (list), `failure_modes` (list), `rationale`, `fix_hint` |
+| `topical_gap` | `category`, `miss_count`, `expected_persona`, `rationale`, `fix_hint` |
+
+The cross-paper aggregation module (`ai_paper_review.aggregation`) groups suggestions by `(type, target_persona, category)` across N papers and only emits a recommendation when the same grouping appears in ≥ `min_support` papers (default 2). See [Aggregation](aggregation.md) for the full usage doc.
 
 ---
 
@@ -213,7 +268,7 @@ The web UI's Recent validations list and result page read the run directory dire
 A few conditions cause partial output:
 
 - **LLM returns unparseable alignment matrix.** The parser runs a second pass with fuzzy resolvers; if that also yields 0 rows, all human comments default to `missed`/similarity 0, and the report is written with a degraded-parse indicator at the top of `alignment_similarities.md` (`⚠ degraded` or `✗ PARSE FAILED`).
-- **Human-review conversion LLM returns empty or 0-comment output.** The worker retries up to 5 times (same retry policy as the review stage), then gives up and writes `actual_converted.md` with whatever it got. Downstream metrics will be skewed but not crash.
+- **Human-review conversion LLM returns empty or 0-comment output.** The conversion module raises immediately — there is no retry loop. The web worker surfaces the error to the user; `actual_raw_llm.md` is written before the parse attempt so the verbatim model response is available for diagnosis.
 - **Validation stage LLM errors (quota, rate limit).** The run's status flips to `errored` and the run directory is left partial; the `_ui_state.json` is not written, so it doesn't appear in the Recent validations result-view list (it will still show as an errored row if the in-memory job registry knows about it from this server session).
 
 These are best diagnosed by reading `alignment_llm_analysis.md` and `actual_raw_llm.md` — the verbatim pre-parse LLM outputs. If the LLM response looks syntactically fine but the parser rejected it, the parser needs updating; if the response is empty or truncated, the provider/model is the culprit.

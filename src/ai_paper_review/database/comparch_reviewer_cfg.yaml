@@ -1,15 +1,13 @@
 # Default reviewer-database configuration for the paper-review system.
 #
-# This file is loaded by ai_paper_review.db.generate_database() when no
+# This file is loaded by ai_paper_review.database.generation when no
 # --config path is given on the CLI. To generate a database for a different
 # field, copy this file, edit `field` / `domains` / `personas`, then run:
 #
 #     ai-paper-review-generate-db --config my_config.yaml --out my_db.md
 #
-# All three top-level keys are optional in a user config:
-#   * omit `field` to keep 'computer architecture'
-#   * omit `domains` to inherit the bundled CA domain list
-#   * omit `personas` to inherit the bundled 20-persona list
+# All five top-level keys (field, version, domains, personas, validation_attribution)
+# are required. See docs/database_format.md for the full spec.
 
 field: "computer architecture"
 version: "1.0"
@@ -531,3 +529,133 @@ personas:
       - "Does the paper identify a direction with lasting impact?"
       - "Are the proposed future steps concrete and valuable?"
       - "Does the work open new questions beyond closing one?"
+
+validation_attribution:
+  category_vocab:
+    - novelty
+    - methodology
+    - related work
+    - evaluation
+    - theory
+    - industry
+    - scalability
+    - performance
+    - energy
+    - reproducibility
+    - clarity
+    - benchmark
+    - hardware
+    - integration
+    - security
+    - cost
+    - deployment
+    - formal
+    - cross-disciplinary
+    - vision
+
+  category_to_persona:
+    novelty:               Novelty Hunter
+    originality:           Novelty Hunter
+    contribution:          Novelty Hunter
+    incremental:           Novelty Hunter
+
+    methodology:           Methodology Critic
+    experimental design:   Methodology Critic
+    baseline:              Methodology Critic
+    rigor:                 Methodology Critic
+    controls:              Methodology Critic
+
+    related work:          Literature Scholar
+    literature:            Literature Scholar
+    citations:             Literature Scholar
+    prior work:            Literature Scholar
+
+    evaluation:            Empirical Evaluator
+    experiments:           Empirical Evaluator
+    empirical:             Empirical Evaluator
+    workload:              Empirical Evaluator
+
+    theory:                Theorist
+    analysis:              Theorist
+    model:                 Theorist
+    bounds:                Theorist
+
+    industry:              Industry Pragmatist
+    practical:             Industry Pragmatist
+    applicability:         Industry Pragmatist
+    adoption:              Industry Pragmatist
+
+    scalability:           Scalability Analyst
+    scale:                 Scalability Analyst
+    throughput:            Scalability Analyst
+
+    performance:           Performance Specialist
+    speedup:               Performance Specialist
+    latency:               Performance Specialist
+    overhead:              Performance Specialist
+
+    energy:                Energy & Efficiency Advocate
+    power:                 Energy & Efficiency Advocate
+    efficiency:            Energy & Efficiency Advocate
+    perf-per-watt:         Energy & Efficiency Advocate
+
+    reproducibility:       Reproducibility Champion
+    artifact:              Reproducibility Champion
+    replication:           Reproducibility Champion
+
+    clarity:               Clarity & Presentation Editor
+    writing:               Clarity & Presentation Editor
+    presentation:          Clarity & Presentation Editor
+    figure:                Clarity & Presentation Editor
+    notation:              Clarity & Presentation Editor
+
+    benchmark:             Benchmark & Workload Expert
+    dataset:               Benchmark & Workload Expert
+    trace:                 Benchmark & Workload Expert
+
+    hardware:              Hardware Implementation Engineer
+    implementation:        Hardware Implementation Engineer
+    silicon:               Hardware Implementation Engineer
+    synthesis:             Hardware Implementation Engineer
+    ppa:                   Hardware Implementation Engineer
+
+    integration:           Software/Systems Integrator
+    api:                   Software/Systems Integrator
+    stack:                 Software/Systems Integrator
+    compatibility:         Software/Systems Integrator
+
+    security:              Security & Correctness Auditor
+    correctness:           Security & Correctness Auditor
+    threat:                Security & Correctness Auditor
+    side channel:          Security & Correctness Auditor
+
+    cost:                  Cost-Benefit Analyst
+    area:                  Cost-Benefit Analyst
+    tradeoff:              Cost-Benefit Analyst
+
+    deployment:            Deployment Veteran
+    operations:            Deployment Veteran
+    production:            Deployment Veteran
+    operational:           Deployment Veteran
+
+    formal:                Formal Methods Expert
+    verification:          Formal Methods Expert
+    proof:                 Formal Methods Expert
+    invariant:             Formal Methods Expert
+
+    cross-disciplinary:    Cross-Disciplinary Thinker
+    interdisciplinary:     Cross-Disciplinary Thinker
+    cross-cutting:         Cross-Disciplinary Thinker
+
+    vision:                Visionary & Future-Work Critic
+    future work:           Visionary & Future-Work Critic
+    impact:                Visionary & Future-Work Critic
+
+  sub_rating_to_persona:
+    soundness:      Methodology Critic
+    presentation:   Clarity & Presentation Editor
+    contribution:   Novelty Hunter
+    clarity:        Clarity & Presentation Editor
+    significance:   Novelty Hunter
+    technical:      Methodology Critic
+    reproducibility: Reproducibility Champion

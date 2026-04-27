@@ -5,12 +5,14 @@ This document specifies the two file formats involved in a reviewer database:
 1. **YAML config** — a compact description of a field's sub-domains and reviewing personas. Easy to edit by hand or produce from a script.
 2. **Reviewer-database markdown** — the runtime artifact the paper-review pipeline parses. Verbose but self-contained: each reviewer is a full LLM system prompt.
 
-The project ships a complete example of each for the default Computer Architecture database:
+Two databases are bundled by default: **Computer Architecture** and **Machine Learning & AI**. Each ships both formats:
 
-- `src/ai_paper_review/data/comparch_reviewer_cfg.yaml` — the YAML source
-- `src/ai_paper_review/data/comparch_reviewer_db.md` — the runtime artifact
+| Database | YAML config | Runtime markdown |
+|---|---|---|
+| Computer Architecture | `src/ai_paper_review/database/comparch_reviewer_cfg.yaml` | `src/ai_paper_review/database/comparch_reviewer_db.md` |
+| Machine Learning & AI | `src/ai_paper_review/database/mlai_reviewer_cfg.yaml` | `src/ai_paper_review/database/mlai_reviewer_db.md` |
 
-**This project does not include tooling to convert one to the other.** The YAML is provided as a compact template for hand-editing; the markdown is what the runtime consumes. If you want both in sync for a field other than Computer Architecture, you write the conversion yourself (a few dozen lines of Python that template-fills the markdown from the YAML data).
+Run `ai-paper-review-generate-db --config <cfg.yaml> --out <db.md>` to convert a YAML config into the runtime markdown. See §4 for the full step-by-step.
 
 ---
 
@@ -20,51 +22,90 @@ A reviewer-config YAML describes a single field: what sub-domains partition it, 
 
 ### Top-level keys
 
-| Key                      | Type    | Required | Description                                                              |
-|--------------------------|---------|----------|--------------------------------------------------------------------------|
-| `field`                  | string  | yes      | Umbrella discipline name. Appears in every reviewer's system prompt.     |
-| `version`                | string  | yes      | Version stamp written into the reviewer-database markdown header.        |
-| `domains`                | list    | yes      | Sub-domains that partition the field. Each is a mapping (see below).     |
-| `personas`               | list    | yes      | Reviewing personas. Replicated in every domain. Each is a mapping (see below). |
-| `validation_attribution` | mapping | no       | Category vocab + category/sub-rating → persona routing maps used by the validation calibration step. Required if the DB will be validated against human reviews; see "Validation attribution entry" below. |
+| Key                      | Type    | Description                                                              |
+|--------------------------|---------|--------------------------------------------------------------------------|
+| `field`                  | string  | Umbrella discipline name. Appears in every reviewer's system prompt.     |
+| `version`                | string  | Version stamp written into the reviewer-database markdown header.        |
+| `domains`                | list    | Sub-domains that partition the field. Each is a mapping (see below).     |
+| `personas`               | list    | Reviewing personas. Replicated in every domain. Each is a mapping (see below). Design personas that match your field's reviewing concerns — see the bundled configs for examples. |
+| `validation_attribution` | mapping | Category vocab + category/sub-rating → persona routing maps used by the validation calibration step. See "Validation attribution entry" below for the three sub-keys. |
 
 ### Domain entry
 
 Each item in the `domains:` list is a mapping with these keys:
 
-| Key           | Type   | Required | Description                                                                  |
-|---------------|--------|----------|------------------------------------------------------------------------------|
-| `id`          | string | yes      | Short identifier, e.g. `"D1"`, `"D2"`, … Used to group reviewer IDs.         |
-| `name`        | string | yes      | Human-readable sub-domain name, e.g. `"AI/ML Systems"`.                      |
-| `short`       | string | yes      | Lowercase slug, e.g. `"ai_ml_systems"`. No spaces or special characters.     |
-| `description` | string | yes      | One-sentence summary of what the sub-domain covers.                          |
-| `keywords`    | list   | yes      | 20–30 technical terms, tools, methods, or datasets used in papers in this sub-area. Used by the reviewer selector to match papers. |
-| `venues`      | string | yes      | Comma-separated list of 5–8 conferences or journals where papers in this sub-area appear. |
+| Key           | Type   | Description                                                                  |
+|---------------|--------|------------------------------------------------------------------------------|
+| `id`          | string | Short identifier, e.g. `"D1"`, `"D2"`, … Used to group reviewer IDs.         |
+| `name`        | string | Human-readable sub-domain name, e.g. `"AI/ML Systems"`.                      |
+| `short`       | string | Lowercase slug, e.g. `"ai_ml_systems"`. No spaces or special characters.     |
+| `description` | string | One-sentence summary of what the sub-domain covers.                          |
+| `keywords`    | list   | 20–30 technical terms, tools, methods, or datasets used in papers in this sub-area. Used by the reviewer selector to match papers. |
+| `venues`      | string | Comma-separated list of 5–8 conferences or journals where papers in this sub-area appear. |
 
 ### Persona entry
 
 Each item in the `personas:` list is a mapping with these keys:
 
-| Key               | Type   | Required | Description                                                                  |
-|-------------------|--------|----------|------------------------------------------------------------------------------|
-| `name`            | string | yes      | Short display name, e.g. `"Novelty Hunter"`.                                 |
-| `slug`            | string | yes      | Lowercase identifier, e.g. `"novelty"`.                                      |
-| `focus`           | string | yes      | One-line focus statement: what this reviewer emphasizes.                     |
-| `style`           | string | yes      | One-sentence characterization of how this reviewer approaches a paper.       |
-| `priorities`      | list   | yes      | 2–5 bullet points phrased as questions the reviewer asks of every paper.     |
-| `common_concerns` | string | yes      | One sentence summarizing the typical issues this persona flags.              |
+| Key               | Type   | Description                                                                  |
+|-------------------|--------|------------------------------------------------------------------------------|
+| `name`            | string | Short display name, e.g. `"Novelty Hunter"`.                                 |
+| `slug`            | string | Lowercase identifier, e.g. `"novelty"`.                                      |
+| `focus`           | string | One-line focus statement: what this reviewer emphasizes.                     |
+| `style`           | string | One-sentence characterization of how this reviewer approaches a paper.       |
+| `priorities`      | list   | 2–5 bullet points phrased as questions the reviewer asks of every paper.     |
+| `common_concerns` | string | One sentence summarizing the typical issues this persona flags.              |
 
 ### Validation attribution entry
 
-`validation_attribution:` is a single mapping with three keys. Every persona name on the right-hand side of either map MUST match a `name:` from the `personas:` list above — otherwise the validation step will attribute missed human comments to personas that don't exist in this DB.
+The validation pipeline compares AI-generated reviews against real human reviews. When a human reviewer raises a concern that the AI missed, the pipeline needs to know *which AI persona should have caught it* — so it can recommend adjusting that persona's prompt or selection weight. The three keys in `validation_attribution:` control this routing. There are two distinct kinds of misses, each handled by a different key:
 
-| Key                     | Type                | Required | Description                                                                 |
-|-------------------------|---------------------|----------|-----------------------------------------------------------------------------|
-| `category_vocab`        | list[str]           | yes      | Closed list of category strings the LLM human-review conversion step is told to pick from. Unknown categories are blanked out at parse time. |
-| `category_to_persona`   | dict[str → str]     | yes      | Lowercase category (or near-miss keyword) → persona name. The router substring-matches any key inside an incoming category string, so a few extra fuzzy keys per persona (e.g. `baseline: Methodology Critic` alongside `methodology: Methodology Critic`) catch LLM drift cheaply. |
-| `sub_rating_to_persona` | dict[str → str]     | yes      | Lowercase sub-rating name (OpenReview-style Soundness / Presentation / Contribution / …) → persona name. |
+- **Explicit misses** — the human wrote a comment the AI didn't raise. The comment's `Category:` tag (constrained by `category_vocab`) is looked up in `category_to_persona` to identify the responsible persona.
+- **Implicit misses** — the human gave a *low sub-rating* (e.g. Soundness: 2/5) without necessarily writing a detailed comment about it. The sub-rating dimension is looked up in `sub_rating_to_persona` to identify the persona that should have flagged the underlying weakness.
 
-Minimal fragment:
+Every persona name on the right-hand side of either map MUST exactly match a `name:` from the `personas:` list — otherwise the calibration report will point at personas that don't exist in the DB. All three sub-keys (`category_vocab`, `category_to_persona`, `sub_rating_to_persona`) are required.
+
+#### `category_vocab` — closed category list
+
+A list of short lowercase strings that define the allowed category tags for a review comment. When a human review is converted to structured AI-review format, the LLM is told to assign each comment one of these strings as its `Category:` field. Any value the LLM produces that is not in this list is blanked out at parse time.
+
+Practical guidance:
+- Use 15–25 entries that cover the reviewing concerns in your `personas:` list. Each persona should correspond to at least one vocab entry.
+- Keep strings short and lowercase (e.g. `novelty`, `methodology`, `data`, `ablation`) — the LLM conversion step picks from this list literally.
+- If you add fuzzy synonyms in `category_to_persona`, you don't need to add them here too — `category_vocab` is the *controlled* list; `category_to_persona` handles the fuzzy matching separately.
+
+#### `category_to_persona` — category → persona routing
+
+A dict mapping a lowercase category string (or a near-miss keyword) to the persona name that should have raised concerns in that category. The router **substring-matches** each key against the incoming category string, so a key like `"methodology"` also matches `"methodology and experimental rigor"`. This lets a few extra fuzzy keys per persona cheaply catch LLM-produced category drift without bloating the vocab.
+
+Practical guidance:
+- Every entry in `category_vocab` should appear as a key here, mapping to the most relevant persona.
+- Add 2–4 fuzzy synonym keys per persona for common misspellings or multi-word LLM outputs (e.g. `"baseline"` → `Methodology Critic` alongside `"methodology"` → `Methodology Critic`).
+- Every persona should appear on the right-hand side at least once — orphan personas never receive miss attribution.
+
+#### `sub_rating_to_persona` — sub-rating → persona routing
+
+Handles **implicit misses**: cases where a human gave a low structured score on a dimension without writing a detailed comment about it. Sub-ratings are the numerical axes some review systems attach to papers alongside the overall score — for example, OpenReview uses **Soundness**, **Presentation**, **Contribution**, and **Confidence**.
+
+When the pipeline encounters a low sub-rating in a human review, it looks up the dimension name here to find the persona that should have flagged the underlying weakness. For example: if a human gives Soundness: 2/5 but writes only one sentence about methodology, the pipeline records a miss against whichever persona is mapped to `soundness` — even though no explicit comment category pointed there.
+
+This is complementary to `category_to_persona`: that key covers explicit comments the AI missed; this key covers dimensions the human scored poorly even when they didn't elaborate in prose.
+
+Standard OpenReview sub-rating keys and their natural persona mappings:
+
+| Sub-rating        | Typical mapping                      |
+|-------------------|--------------------------------------|
+| `soundness`       | methodology / rigor persona          |
+| `presentation`    | clarity / writing persona            |
+| `contribution`    | novelty persona                      |
+| `clarity`         | clarity / writing persona            |
+| `significance`    | novelty or vision persona            |
+| `technical`       | methodology persona                  |
+| `reproducibility` | reproducibility persona              |
+
+The map only fires when the human review data actually contains sub-rating fields. If the target venue doesn't export sub-ratings, these entries are present but never activated.
+
+#### Minimal example
 
 ```yaml
 validation_attribution:
@@ -73,21 +114,34 @@ validation_attribution:
     - methodology
     - evaluation
     - reproducibility
+    - clarity
 
   category_to_persona:
     novelty:          Novelty Hunter
     originality:      Novelty Hunter
+    contribution:     Novelty Hunter
     methodology:      Methodology Critic
+    baseline:         Methodology Critic
+    rigor:            Methodology Critic
     evaluation:       Empirical Evaluator
+    experiments:      Empirical Evaluator
     reproducibility:  Reproducibility Champion
+    artifact:         Reproducibility Champion
+    clarity:          Clarity & Presentation Editor
+    writing:          Clarity & Presentation Editor
+    presentation:     Clarity & Presentation Editor
 
   sub_rating_to_persona:
-    soundness:     Methodology Critic
-    presentation:  Clarity & Presentation Editor
-    contribution:  Novelty Hunter
+    soundness:       Methodology Critic
+    presentation:    Clarity & Presentation Editor
+    contribution:    Novelty Hunter
+    clarity:         Clarity & Presentation Editor
+    significance:    Novelty Hunter
+    technical:       Methodology Critic
+    reproducibility: Reproducibility Champion
 ```
 
-See §7 of the bundled `comparch_reviewer_db.md` for the full 20-persona example.
+See §7 of the bundled `comparch_reviewer_db.md` and `mlai_reviewer_db.md` for full 20-persona examples with field-specific vocabulary.
 
 ### Minimal example
 
@@ -149,7 +203,7 @@ personas:
     common_concerns: Underpowered experiments; missing controls.
 ```
 
-See `src/ai_paper_review/data/comparch_reviewer_cfg.yaml` for a full, production-scale example (10 domains × 20 personas, all fields populated).
+See `src/ai_paper_review/database/comparch_reviewer_cfg.yaml` and `src/ai_paper_review/database/mlai_reviewer_cfg.yaml` for full production-scale examples (10 domains × 20 field-specific personas each, all fields populated including `validation_attribution`).
 
 ### Reviewer count
 
@@ -158,7 +212,7 @@ The runtime reviewer count is `len(domains) × len(personas)`. With 10 domains a
 ### Design guidance
 
 - **Keep domain keywords specific.** The selector uses these to match a paper's extracted keywords against each reviewer's domain. Generic terms (e.g. "research", "analysis") dilute the matching; specific technical terms (tools, methods, algorithms, datasets) make it work well.
-- **Personas should be field-agnostic.** The 20 bundled personas (Novelty Hunter, Methodology Critic, Reproducibility Champion, Deployment Veteran, etc.) work for almost any discipline. You can reuse them verbatim for a new field and only replace `domains:`.
+- **Tailor personas to your field.** The reviewing concerns that matter for computer architecture (silicon feasibility, energy, deployment, formal methods) differ from those that matter for ML/AI (data quality, benchmark contamination, ablation analysis, scaling, ethics). Copy the bundled config closest to your discipline and adapt the personas rather than using a generic set.
 - **Priorities should be questions, not statements.** Each priority is prepended with "You ask:" in the generated system prompt, so phrase them as things the reviewer checks.
 
 ---
@@ -171,12 +225,12 @@ The markdown file is what the pipeline actually parses at runtime. It's organize
 2. The fenced `text` code block after `- **System Prompt:**` in each reviewer.
 3. The fenced `yaml` code block in **Section 7: Validation Attribution Tables** (consumed by the validation pipeline — category vocab and category/sub-rating → persona routing).
 
-Sections 1–4 and 6 are for human readers only; you can omit or reword them freely. Section 7 is required when the DB will be used for validation; if it's omitted entirely the review pipeline still works and the validation pipeline just skips attribution with a warning.
+Sections 1–4 and 6 are for human readers only; you can omit or reword them freely. Section 7 carries the validation attribution tables — always present in databases generated by `ai-paper-review-generate-db` (the YAML config requires `validation_attribution`). For hand-authored databases it is technically optional: if the section is absent the review pipeline still works, but the validation pipeline will skip miss attribution with a warning.
 
 ### Overall file layout
 
 ````
-# <Field-Titlecased> Paper Review System — Reviewer Database
+# <Field-Titlecased> Reviewer Database
 
 **Version:** <version string>
 **Total Reviewers:** <N>
@@ -317,25 +371,47 @@ your reviewing lens emphasizes Reproducibility, artifact quality, and experiment
 ## Expertise Profile
 - **Sub-area**: Memory Systems — <description>
 - **Typical venues you review for**: ISCA, MICRO, HPCA, ASPLOS, SIGMETRICS, PACT
-- **Core technical fluency includes**: DRAM, SRAM, cache, coherence, consistency, ...
+- **Background**: You have deep familiarity with DRAM, SRAM, cache, coherence, ..., and you
+  track recent developments in this area.
 
-## Your Reviewing Priorities
-
-As a Reproducibility Champion, you focus on: Reproducibility, artifact quality,
-and experimental transparency.
-
-You ask:
+## Review Lens (Reproducibility Champion)
+- **Style**: Trust-but-verify; asks whether another group could replicate the results.
+- **Core questions you always ask**:
     1. Is the evaluation setup reproducible end-to-end?
     2. Are datasets, random seeds, and hyperparameters specified?
     3. ...
+- **Patterns you flag most often**: <one sentence>
 
-Reviewing style: Trust-but-verify; asks whether another group could replicate the results.
-
-## Common concerns flagged by this persona
-<one sentence>
+## Your Task
+Read the paper provided in the user message. Produce between **5 and 10 review comments** ...
 
 ## Output Format
-... <structured output instructions — see the bundled database for the full template> ...
+Return your review in **markdown** using exactly this structure. ...
+
+# Review
+
+**Reviewer ID:** R042
+**Domain:** Memory Systems
+**Persona:** Reproducibility Champion
+**Topic Relevance:** <float 0.0-1.0>
+**Overall Recommendation:** <strong_accept | accept | ... | strong_reject>
+**Confidence:** <int 1-5>
+
+## Comment 1
+- **Severity:** <major | moderate | minor>
+- **Category:** <short tag, e.g. novelty, methodology, reproducibility>
+- **Section Reference:** <section/figure/table or general>
+- **Summary:** <one-sentence summary>
+- **Description:** <2-4 sentences>
+- **Keywords:** <comma-separated keywords>
+
+## Comment 2
+...
+
+## Rules
+1. Produce **between 5 and 10** comments — no more, no less.
+2. Stay within your persona lens ...
+...
 ```
 
 The bundled database's system prompts follow a rigid template; you are not required to. What matters is that the LLM's response parses into comment records downstream (see [Review Output Format](review_output_format.md) for the expected shape).
@@ -365,94 +441,50 @@ After upload, the new database appears in the **Reviewer database** dropdown on 
 
 ## 4. Building a new database — step-by-step
 
-The shortest path from "I want reviewers for discipline X" to an uploadable `.md` file. Assumes some comfort with editing a YAML file and writing a small Python or shell script.
+The process is: produce a YAML config → run the CLI to generate the markdown → upload. The YAML can be written by hand or generated by an LLM in seconds.
 
-### Step 1 — decide the matrix
+### Step 1 — produce the YAML config
 
-Before opening an editor, answer three questions:
+**Option A — LLM generation (recommended)**
 
-1. **How many sub-domains partition your field?** The bundled default uses 10 for Computer Architecture. Most disciplines fit comfortably in 5–15. Too few and the selector can't differentiate; too many and each persona gets diluted.
-2. **How many reviewing personas per domain?** The bundled 20 covers almost every reviewing concern (novelty, methodology, reproducibility, clarity, scope, etc.). Reusing the bundled 20 is usually the right choice — only replace them if your discipline has genuinely different reviewing lenses.
-3. **What name should each reviewer's system prompt cite as the umbrella field?** e.g. `"molecular biology"`, `"climate science"`, `"condensed matter physics"`.
+Use the bundled prompt at `src/ai_paper_review/prompts/database_generation.md`. Copy the prompt, replace `[FIELD NAME]` with your discipline, and paste into any capable LLM (Claude, GPT-4, Gemini, etc.). The LLM produces a complete, ready-to-run YAML covering all five top-level keys — domains, personas, and a full `validation_attribution` block — in one shot.
 
-### Step 2 — copy the YAML template
+Review the output before running the CLI:
+- Check that `domains` covers the field's sub-areas and that each keyword list is specific (20–30 technical terms, no generic words).
+- Check that `personas` are genuinely field-specific and cover both universal and field-specific reviewing lenses.
+- Check that every persona name on the right-hand side of `category_to_persona` and `sub_rating_to_persona` exactly matches a `name:` in the `personas` list.
+
+**Option B — manual editing**
+
+Copy a bundled config and edit it by hand:
 
 ```bash
-cp src/ai_paper_review/data/comparch_reviewer_cfg.yaml my_field.yaml
+cp src/ai_paper_review/database/comparch_reviewer_cfg.yaml my_field.yaml
 ```
 
-### Step 3 — edit the YAML
+Edit:
+1. `field:` — your discipline name.
+2. `domains:` — replace with 8–15 sub-areas for your field. Keep the same entry shape (`id`, `name`, `short`, `description`, `keywords`, `venues`). Aim for 20–30 specific technical keywords per domain.
+3. `personas:` — replace with 20 personas tailored to your field's reviewing concerns. Use the comparch and ML/AI configs as reference for the entry shape.
+4. `validation_attribution:` — update `category_vocab`, `category_to_persona`, and `sub_rating_to_persona` to match your new personas. See §1.4 for the full spec.
 
-Open `my_field.yaml` and make three kinds of edits:
+### Step 2 — generate the reviewer-database markdown
 
-1. **Change the top-level `field:`** to your discipline name.
-2. **Replace the `domains:` list** — keep the same shape (one mapping per sub-domain with `id`, `name`, `short`, `description`, `keywords`, `venues`), but fill in content for your discipline. Aim for 20–30 specific technical keywords per domain; generic terms like `"research"` dilute the selector.
-3. **Either keep `personas:` as-is** (recommended — the 20 bundled personas work for almost every field) **or replace** them if your discipline needs different reviewing lenses.
-4. **Add `validation_attribution:`** if you plan to run the validation pipeline against this DB. Copy the bundled block and adjust the category list + persona names for your field. Skipping this is fine for review-only DBs, but validation will log a warning and produce a calibration report with no miss attribution against that DB.
+Run the CLI. It reads your YAML and writes the full reviewer-database markdown in one step:
 
-You can also delete the `personas:` key entirely from your config and rely on falling back to the bundled default — see §1 for partial-config semantics.
-
-### Step 4 — convert YAML to the reviewer-database markdown
-
-This project does not ship tooling for this conversion (by design — the generator and its LLM variants were removed to keep the surface area small). Write a small script yourself, using the format spec in §2 as the template. Roughly 50–80 lines of Python. A minimal template-based approach:
-
-```python
-import yaml
-from pathlib import Path
-
-cfg = yaml.safe_load(Path("my_field.yaml").read_text())
-field = cfg["field"]
-domains = cfg["domains"]
-personas = cfg["personas"]
-attribution = cfg.get("validation_attribution")  # optional; see §1
-
-# System-prompt template used for every reviewer.
-SYSTEM = """You are **Reviewer {rid}**, an expert peer reviewer for {field} research, \
-specialized in **{domain}**.
-... (see bundled comparch_reviewer_db.md for the full template)
-"""
-
-out = [f"# {field.title()} Paper Review System — Reviewer Database\n",
-       f"**Version:** 1.0\n",
-       f"**Total Reviewers:** {len(domains) * len(personas)}\n",
-       f"**Domains:** {len(domains)} × **Personas per Domain:** {len(personas)}\n\n---\n",
-       "\n## 5. Reviewer Entries\n"]
-idx = 1
-for d in domains:
-    out.append(f"\n### Domain {d['id']}: {d['name']}\n\n")
-    for p in personas:
-        rid = f"R{idx:03d}"
-        sp = SYSTEM.format(rid=rid, field=field, domain=d['name'])  # + persona-specific text
-        out.append(f"\n#### {rid} — {p['name']}\n\n"
-                   f"- **Domain:** {d['name']}\n"
-                   f"- **Persona:** {p['name']}\n"
-                   f"- **Focus:** {p['focus']}\n"
-                   f"- **Review Style:** {p['style']}\n"
-                   f"- **Keywords:** {', '.join(d['keywords'])}\n"
-                   f"- **System Prompt:**\n\n```text\n{sp}\n```\n\n")
-        idx += 1
-
-# Section 7 — required if this DB will be validated against human reviews.
-if attribution:
-    out.append("\n---\n\n## 7. Validation Attribution Tables\n\n")
-    out.append(
-        "Consumed by the validation calibration step. Persona names on the "
-        "right-hand side must match `####  R### — <Persona>` headings above.\n\n"
-    )
-    out.append("```yaml\n")
-    out.append(yaml.safe_dump(attribution, sort_keys=False))
-    out.append("```\n")
-
-Path("my_field.md").write_text("".join(out))
+```bash
+ai-paper-review-generate-db \
+    --config my_field.yaml \
+    --out    my_field.md
 ```
 
-Reference `src/ai_paper_review/data/comparch_reviewer_db.md` for what the expected output looks like in full. The parser is lenient about spacing but strict about the six `- **Label:**` lines and the fenced `text` code block — see §2's "Reviewer block — parser-relevant detail" table for the exact shapes. For section 7's YAML block, see the companion "Validation attribution tables — parser-relevant detail" table.
+The command prints the output path, file size, and reviewer count on success. If `--out` is omitted the file is written to `./<field-slug>_reviewer_db.md` in the current directory.
 
-### Step 5 — upload and test
+### Step 3 — upload and test
 
-Upload via the **Databases** page in the web UI. The upload handler parses the file and rejects it with a clear error if anything's malformed.
+Upload via the **Databases** page in the web UI. The upload handler parses the file and rejects it with a clear error if anything is malformed.
 
-After upload, run a test review against a sample paper from the discipline to sanity-check that the selector picks sensible reviewers and that the system prompts produce useful critique. If the selector is missing obvious matches, go back to step 3 and add more specific keywords to the relevant domain.
+After upload, run a test review against a sample paper from the discipline to sanity-check that the selector picks sensible reviewers and that the system prompts produce useful critique. If the selector misses obvious matches, go back to step 1 and add more specific keywords to the relevant domain.
 
 ### A note on programmatic vs hand-authored databases
 

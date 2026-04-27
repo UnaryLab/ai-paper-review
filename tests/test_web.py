@@ -279,7 +279,7 @@ def test_list_available_databases_includes_default(tmp_path, monkeypatch):
 
     # Seed one user-uploaded DB by copying the bundled default into the
     # databases dir under a different name. No generation code involved.
-    bundled = files("ai_paper_review.data").joinpath("comparch_reviewer_db.md")
+    bundled = files("ai_paper_review.database").joinpath("comparch_reviewer_db.md")
     shutil.copy(str(bundled), workdir / "databases" / "seeded.md")
 
     monkeypatch.setenv("PAPER_REVIEW_WORKDIR", str(workdir))

@@ -50,8 +50,10 @@ Workflow-level flow. The human-review conversion stage only runs when the upload
   ┌──────────────────────────────────────────────────────────────────┐
   │  Stage 3: Comment alignment                                      │
   │   In:  human comments (N) × AI comments (M)                      │
-  │   Out: N × M similarity scores + per-row verdict                 │
-  │        (hit / partial / miss) + per-cell rationale               │
+  │   Out: N × M similarity scores + per-row verdict per human       │
+  │        comment (same / partial / missed; thresholds ≥0.65 /      │
+  │        ≥0.35) + a batch-summary dict (llm_comparison) passed     │
+  │        through to Stage 6 as the Semantic Comparison section     │
   │   Side outputs (diagnostic):                                     │
   │     • alignment_llm_analysis.md  (raw LLM response + prompt)     │
   │     • alignment_similarities.md  (parsed N × M matrix)           │
@@ -77,10 +79,20 @@ Workflow-level flow. The human-review conversion stage only runs when the upload
                           ▼
   ┌──────────────────────────────────────────────────────────────────┐
   │  Stage 6: Report formatting                                      │
-  │   In:  alignment + metrics + calibration delta                   │
-  │   Out: seven-section markdown report (header, summary metrics,   │
-  │        hits, misses, false alarms, per-persona stats,            │
-  │        calibration suggestions)                                  │
+  │   In:  alignment + metrics + calibration delta + llm_comparison  │
+  │   Out: markdown report with up to 10 sections:                   │
+  │          header + paper metadata                                 │
+  │          Semantic Comparison (LLM) — always present; summarises  │
+  │            the batch alignment (hits/misses/false-alarm counts)  │
+  │          Summary Metrics table                                   │
+  │          Hits                                                    │
+  │          Misses                                                  │
+  │          False Alarms                                            │
+  │          Per-Persona Performance table                           │
+  │          Sub-Rating Signal Attribution — if low sub-ratings      │
+  │            present in the human review                           │
+  │          Failure Mode Breakdown                                  │
+  │          Calibration Suggestions for the Reviewer Database       │
   └───────────────────────┬──────────────────────────────────────────┘
                           ▼
   ┌──────────────────────────────────────────────────────────────────┐
@@ -109,11 +121,11 @@ The `calibration_delta.json` output of each run is the input to the separate [Ag
 
 | # | Stage                    | Input                                 | Output                                           | LLM calls |
 |---|--------------------------|---------------------------------------|--------------------------------------------------|-----------|
-| 1 | Human-review conversion (optional) | raw human-review text       | structured markdown in the AI-review schema      | 1 (+ repair retry on parse failure) |
+| 1 | Human-review conversion (optional) | raw human-review text       | structured markdown in the AI-review schema      | 1 (raises on parse failure — no retry) |
 | 2 | Comment loading          | both sides' markdown                  | flat comment lists tagged with reviewer metadata | 0         |
-| 3 | Comment alignment        | human × AI comment grid               | N × M similarity matrix + per-row verdicts       | **1 batch** |
+| 3 | Comment alignment        | human × AI comment grid               | N × M similarity matrix + per-row verdicts (same / partial / missed) + `llm_comparison` summary | **1 batch** |
 | 4 | Metric computation       | alignment output                      | precision / recall / F1 / severity-weighted recall | 0       |
-| 5 | Calibration delta        | alignment + AI report + reviewer DB   | per-persona stats + suggestions                  | 0         |
-| 6 | Report formatting        | alignment + metrics + calibration     | validation_report.md                             | 0         |
+| 5 | Calibration delta        | alignment + AI report + reviewer DB   | per-persona stats + miss / sub-rating attributions + suggestions | 0 |
+| 6 | Report formatting        | alignment + metrics + calibration + llm_comparison | validation_report.md (up to 10 sections) | 0 |
 
 Only Stages 1 and 3 hit the network. Stage 3's single-batch design is load-bearing: naively doing N × M per-pair calls would cost O(N·M) calls per paper and make validation latency-dominant. One structured call returns the whole matrix.

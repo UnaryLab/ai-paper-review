@@ -20,8 +20,9 @@ Each recurring suggestion maps to a specific knob in the reviewer-database confi
 |-------------------------------|------------------------------------------------------------------------------------|
 | `strengthen_persona_prompt`   | Add a bullet to the target persona's `priorities` list                             |
 | `reduce_persona_noise`        | Tighten the target persona's `common_concerns` field                               |
-| `topical_gap`                 | Add a new persona for the uncovered category                                       |
 | `selection_policy_adjustment` | Raise `domain_bleed`, or require a persona-floor, so the missed persona gets selected |
+| `sub_rating_signal`           | Strengthen or add the persona that maps to the low sub-rating dimension (e.g. soundness → Methodology Critic) |
+| `topical_gap`                 | Add a new persona for the uncovered category                                       |
 
 ---
 
@@ -135,7 +136,7 @@ md = render_changelog(
 2. Reviewer-prompt changes affect every future review on every paper; a human "diff + commit" step keeps the blast radius visible.
 3. Keeping the module stateless lets you re-run it as often as you like (e.g. after every validation) without risk.
 
-**What happens when N = 1.** The `min_support` filter clamps to `max(1, n_papers)`, so a single-paper workdir still shows all raw suggestions (with support = 1). Useful for sanity-checking the pipeline's output before accumulating a proper corpus.
+**What happens when N = 1.** The CLI applies the `--min-support` filter as-is — with `--min-support 2` on a single-paper workdir you get 0 recommendations and everything lands in the "Skipped" section. Use `--min-support 1` for early-corpus exploration. The web UI additionally clamps `min_support = max(1, min(min_support, n_papers))` so a too-large value doesn't hide all suggestions when the corpus is small.
 
 **Below-threshold suggestions are still shown.** The web page keeps them in a collapsed section under the main recommendations. Near-misses let you lower `min_support` intelligently if you think a pattern is about to emerge.
 

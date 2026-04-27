@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "ai-paper-review"
-version = "0.3.2"
+version = "0.4.0"
 description = "AI paper review system: multiple LLM reviewer personas, parallel review, clustering and ranking, human-feedback calibration."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -48,10 +48,11 @@ dev = [
 ]
 
 [project.scripts]
-ai-paper-review-review    = "ai_paper_review.review.review:main"
-ai-paper-review-validate  = "ai_paper_review.validation.validation:main"
-ai-paper-review-aggregate = "ai_paper_review.aggregation.aggregation:main"
-ai-paper-review-web       = "ai_paper_review.web.app:main"
+ai-paper-review-review       = "ai_paper_review.review.review:main"
+ai-paper-review-validate     = "ai_paper_review.validation.validation:main"
+ai-paper-review-aggregate    = "ai_paper_review.aggregation.aggregation:main"
+ai-paper-review-web          = "ai_paper_review.web.app:main"
+ai-paper-review-generate-db  = "ai_paper_review.database.generation:main"
 
 [project.urls]
 Homepage   = "https://github.com/diwu1990/ai-paper-review"

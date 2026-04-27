@@ -3,7 +3,7 @@
 This document describes the markdown format each AI reviewer produces, and the shape of the two report files the pipeline writes at the end of a run:
 
 - `review_data.md` — structured per-reviewer output (machine-readable; the canonical artifact used by validation and re-ingestion).
-- `review_report.md` — the human-facing aggregated report (ranked comment clusters, per-domain summary).
+- `review_report.md` — the human-facing report: selected-reviewer table, per-reviewer recommendation table, and ranked comment clusters.
 
 **This document covers `review_data.md` — the structured one.** The aggregate `review_report.md` is prose rendered from it and has no parser requirements.
 
@@ -57,7 +57,7 @@ Below the `# Review` heading, a block of bold-label lines carries reviewer and r
 | `Confidence`              | no       | int 1–5           | Reviewer's self-rated confidence in the review.                    |
 | `Recommendation`          | no       | enum              | Alias for `Overall Recommendation` used by converted human reviews.|
 
-"Expected" means the pipeline and downstream consumers rely on the field. The parser tolerates every one of these missing — it falls back to empty strings for text fields, `0.5` for `Topic Relevance`, `3` for `Confidence`, and empty for the recommendation — so malformed LLM output doesn't crash the pipeline. But a review missing `Reviewer ID`, `Domain`, `Persona`, or `Overall Recommendation` produces degraded downstream output: clustering still works, but per-domain summaries and recommendation histograms go blank.
+"Expected" means the pipeline and downstream consumers rely on the field. The parser tolerates every one of these missing — it falls back to empty strings for text fields, `0.5` for `Topic Relevance`, `3` for `Confidence`, and empty for the recommendation — so malformed LLM output doesn't crash the pipeline. But a review missing `Reviewer ID`, `Domain`, `Persona`, or `Overall Recommendation` produces degraded downstream output: clustering still works, but the selected-reviewer table, per-reviewer recommendation table, and validation alignment results go blank or show `n/a`.
 
 For human reviews, `Reviewer ID` uses an `H##` prefix rather than `R###`. All other labels are the same.
 
@@ -92,7 +92,7 @@ AI reviewers don't emit these sections; they exist so that human-review conversi
 
 ## 3. Comment blocks
 
-After the header, each review contains one or more comment blocks. Every comment starts with `## Comment N` (where N is 1-indexed) and carries five structured fields as bulleted lines.
+After the header, each review contains one or more comment blocks. Every comment starts with `## Comment N` (where N is 1-indexed) and carries six structured fields as bulleted lines.
 
 ```markdown
 ## Comment 1
@@ -108,6 +108,8 @@ After the header, each review contains one or more comment blocks. Every comment
 - **Keywords:** baseline, prior art, MLPerf, comparison
 ```
 
+The six fields above (Severity, Category, Section Reference, Summary, Description, Keywords) are what every AI reviewer prompt requires. The parser also accepts a `Suggestion:` field from older review files — it is preserved for backward compatibility but new reviews do not emit it (the fix suggestion is folded into Description).
+
 ### Field-by-field
 
 | Field               | Expected | Type              | Default if missing | Semantics                                                                  |
@@ -116,12 +118,11 @@ After the header, each review contains one or more comment blocks. Every comment
 | `Category`          | yes      | slug              | `"general"`        | Lowercase, short: `novelty` / `methodology` / `evaluation` / `reproducibility` / `clarity` / `scope` / `ethics` / `security` / etc. Used for persona-alignment analysis. |
 | `Section Reference` | yes      | string            | `"general"`        | Anchor in the paper the comment refers to: section title, figure/table number, equation number, or a quoted phrase. A missing anchor weakens validation scoring — comments marked `general` are treated as likely templated during calibration. |
 | `Summary`           | yes      | one-line string   | derived            | The comment in ≤ 15 words. Drives clustering similarity. If missing, the parser derives one from the first sentence of `Description` (or, for free-form comment blocks, from the prose body). |
-| `Description`       | yes      | multi-line string | derived            | Full critique plus what the authors should do about it. 2–6 sentences. Cites specific paper content. If missing but the comment block contains free-form prose, the parser uses the prose as the description. |
-| `Keywords`          | yes      | comma-separated   | `[]`               | 3–7 topic tags. Used for cross-reviewer clustering.                        |
+| `Description`       | yes      | multi-line string | derived            | Full critique plus what the authors should do about it. 2–4 sentences. Cites specific paper content. If missing but the comment block contains free-form prose, the parser uses the prose as the description. |
+| `Keywords`          | yes      | comma-separated   | `[]`               | 2–5 topic tags. Used for cross-reviewer clustering.                        |
+| `Suggestion`        | no       | multi-line string | (omitted)          | Legacy field from older review files. Preserved by the parser for backward compatibility; new reviews fold the fix recommendation into `Description` instead. |
 
 "Expected" means the field is part of the canonical template the bundled reviewer system prompts emit, and downstream stages assume it exists. The parser is forgiving: every field has a fallback so malformed LLM output never crashes ingestion, but a review where every comment is missing both `Summary` and `Description` is effectively empty and will trigger the retry-up-to-5-times loop in the review worker.
-
-The AI reviewer prompt previously required a separate `Suggestion` field — this has been folded into `Description`, which now covers both the concern and the recommended fix. The parser still accepts and preserves a standalone `Suggestion:` field for backward compatibility with older review files, but new reviews do not emit it.
 
 ### Severity weights
 
@@ -166,20 +167,27 @@ Schema exposed after parsing (per-review dict):
 
 ```python
 {
-    "reviewer_id": "R042",
-    "domain":      "AI/ML Systems",
-    "persona":     "Methodology Critic",
-    "topic_relevance": 0.85,
+    "reviewer_id":            "R042",
+    "domain":                 "AI/ML Systems",
+    "persona":                "Methodology Critic",
+    "topic_relevance":        0.85,
     "overall_recommendation": "weak_reject",
-    "confidence": 3,
+    "recommendation":         "weak_reject",   # alias for overall_recommendation
+    "confidence":             3,
+    # present only when the review block includes the optional sections:
+    # "paper_summary": "...",
+    # "strengths": ["..."],
+    # "sub_ratings": {"soundness": 3, ...},
     "comments": [
         {
+            "comment_id":        "R042-C1",    # "<reviewer_id>-C<index>"
             "severity":          "major",
             "category":          "evaluation",
             "section_reference": "Table 3",
             "summary":           "Missing baseline comparison",
             "description":       "...",
-            "suggestion":        "...",
+            "text":              "...",         # alias for description; used by the validation pipeline
+            "suggestion":        "",            # empty on new reviews; non-empty on legacy files
             "keywords":          ["baseline", "prior art", "MLPerf", "comparison"],
         },
         # ...
@@ -189,7 +197,15 @@ Schema exposed after parsing (per-review dict):
 
 ### `review_report.md`
 
-The human-facing aggregate: ranked comment clusters (comments multiple reviewers raised that got grouped), per-domain summary, strengths/weaknesses called out by ≥2 reviewers, the overall recommendation histogram. Rendered from the structured data above — there's no separate format spec because this file is prose.
+The human-facing report, rendered from the structured data above. Structure (in order):
+
+1. **Disclaimer block** — intended-use warning and description of what was analyzed (full PDF or extracted text, depending on provider).
+2. **Paper** — title and truncated abstract.
+3. **Selected Reviewers** table — ID, Domain, Persona, Selection Relevance score for every reviewer that ran.
+4. **Individual Recommendations** table — per-reviewer Overall Recommendation, Confidence, and comment count.
+5. **Ranked Review Issues** — one `### #N [SEVERITY] Summary` section per cluster, ordered by commonality × importance score. Each cluster shows score, cluster size, distinct reviewer count, category, section reference, and the representative comment's description. Clusters with more than one member include a collapsible `<details>` block listing the other phrasings.
+
+There is no separate format spec for this file — it is prose/markdown rendered by the pipeline and is not parsed by any downstream stage.
 
 ---
 

@@ -30,9 +30,9 @@
 # -----------------------------------------------------------------------------
 llm_review:
   # One of: anthropic_api | openai_api | google_api | xai_api | github_api |
-  #         copilot_sdk | claude_sdk | openai_compatible_api
+  #         claude_sdk | copilot_sdk | openai_compatible_api
   provider: anthropic_api
-  model: claude-sonnet-4-5-20250929
+  model: claude-sonnet-4-6
 
   # Optional base_url for this stage (Azure OpenAI, Ollama, local proxies).
   # Most managed APIs (Anthropic, OpenAI cloud, Google, xAI, GitHub Models)
@@ -87,11 +87,11 @@ api_keys:
 # -----------------------------------------------------------------------------
 # Example model identifiers, for reference.
 # -----------------------------------------------------------------------------
-# anthropic_api:          claude-sonnet-4-5-20250929, claude-opus-4-1-20250805, claude-haiku-4-5
+# anthropic_api:          claude-sonnet-4-6, claude-opus-4-7, claude-haiku-4-5-20251001
 # openai_api:             gpt-4o, gpt-4o-mini, o3, o3-mini, gpt-4.1
 # google_api:             gemini-2.5-pro, gemini-2.5-flash, gemini-2.0-pro
 # xai_api:                grok-4, grok-4-fast, grok-4.20-reasoning, grok-2-latest
-# claude_sdk:             claude-sonnet-4-5-20250929, claude-opus-4-1-20250805, claude-haiku-4-5
+# claude_sdk:             claude-sonnet-4-6, claude-opus-4-7, claude-haiku-4-5-20251001
 # openai_compatible_api:  depends on the endpoint (e.g., llama3.1:8b on Ollama)
 
 

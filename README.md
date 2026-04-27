@@ -2,17 +2,15 @@
 
 Get multiple expert perspectives on your research paper in a few minutes. Upload a PDF, pick how many reviewers from a pool of AI personas should examine it (default 10, **recommended 5–10** for a good balance of speed and accuracy; hard range 1–20), each selected reviewer produces 5–10 structured review comments in parallel, and the results are clustered and ranked so the issues multiple reviewers raise float to the top.
 
-The system ships with a default reviewer database for **computer architecture** (200 reviewers: 10 sub-domains × 20 personas). The reviewer database is a swappable input: you can build one for any research field externally and upload it through the web UI — see [Bring your own reviewer database](#bring-your-own-reviewer-database) below and [Database Format](docs/database_format.md) for the format spec.
+Two reviewer databases are bundled by default: **Computer Architecture** and **Machine Learning & AI** (200 reviewers each: 10 sub-domains × 20 field-specific personas). The reviewer database is a swappable input: you can build one for any research field and upload it through the web UI — see [Bring your own reviewer database](#bring-your-own-reviewer-database) below and [Database Format](docs/database_format.md) for the format spec.
 
 > ## ⚠️ Intended use — please read
 >
-> This tool is a **draft-polishing aid for papers you are writing**. It's designed to help authors spot early-stage weaknesses in their own in-progress work before they submit.
+> **Intended use.** This tool is a **draft-polishing aid for papers you are writing**. It is **not a peer-review generator**. Most venues have strict policies against using LLMs in assigned reviews, due to concerns about bias, hallucination, and the potential for compromising the integrity of the peer-review process. Please use it at your own discretion, and indicate when you have used it.
 >
-> **It is not a peer-review generator.** Most venues have strict policies against using LLMs in assigned reviews, due to concerns about bias, hallucination, and the potential for compromising the integrity of the peer-review process. Please use it at your own discretion, and indicate when you have used it.
+> **Scope.** The system takes in the PDF directly. Depending on the LLM provider, it either analyzes the **full PDF** directly or focuses on the **text and tables** only (extracted by pypdf and MarkItDown). Expect the reviews to focus on methodology description, claims, experimental design, evaluation setup, and writing quality.
 >
-> **What the system analyzes.** It takes in PDF directly. Depending on the LLM provider, it either analyze the full PDF direclty or only focus on the **text and tables** of your PDF (extracted by pypdf and MarkItDown). Expect the reviews to focus on methodology description, claims, experimental design, evaluation setup, and writing quality. 
->
-> Every comment this system produces is a **suggestion to evaluate**, not a finding to accept. AI reviewers hallucinate, miss context, and over-confidently flag non-issues. Expect to reject roughly half of what you see. Use at your own discretion.
+> **Quality.** Every comment this system produces is a **suggestion to evaluate, not a finding to accept**. AI reviewers hallucinate, miss context, and over-confidently flag non-issues. Expect to reject roughly half of what you see. Alignment verdicts in the validation flow are heuristic: LLMs can match surface wording while missing intent, and miss real matches that are phrased differently. **Treat all output as a signal, not ground truth, and use it at your own discretion.**
 
 ---
 
@@ -25,15 +23,19 @@ cd ai_paper_review
 conda env create -f environment.yml            # installs Python deps + LLM SDKs + gh CLI + ai-paper-review in developer mode
 conda activate ai-paper-review
 
-# 2. Configure your LLM provider — pick ONE of these:
+# 2. Configure your LLM provider
+cp config.example.yaml config.yaml            # always required — then edit provider + credentials
 
-# Option A: GitHub Copilot (easiest if you have a Copilot subscription)
-gh auth login                                  # one-time GitHub auth; Copilot SDK uses it
-# then set `provider: copilot_sdk` in config.yaml
+# Option A: Claude Agent SDK (Claude Code / Claude Pro/Max/Team — no API key needed)
+claude /login                                  # one-time login via the Claude Code CLI
+# set `provider: claude_sdk` in config.yaml
 
-# Option B: API-key providers (Anthropic / OpenAI / Google / xAI / GitHub Models)
-cp config.example.yaml config.yaml
-# …edit config.yaml: set provider + paste your API key…
+# Option B: GitHub Copilot (no API key needed)
+gh auth login                                  # one-time GitHub auth
+# set `provider: copilot_sdk` in config.yaml
+
+# Option C: API-key providers (Anthropic / OpenAI / Google / xAI / GitHub Models)
+# set provider + paste your API key in config.yaml
 
 # 3. Launch the web UI to make the life easy
 ai-paper-review-web
@@ -60,7 +62,7 @@ You can also instal from PyPI, which does not render valid `Docs` page on the we
 pip install ai-paper-review                 # PyPI install
 ```
 
-After install, four console scripts are on your `$PATH`:
+After install, five console scripts are on your `$PATH`:
 
 | Command | Purpose |
 |---|---|
@@ -68,6 +70,7 @@ After install, four console scripts are on your `$PATH`:
 | `ai-paper-review-review` | Review a PDF from the CLI |
 | `ai-paper-review-validate` | Compare AI review vs human review and emit per-paper calibration delta |
 | `ai-paper-review-aggregate` | Roll up N calibration deltas into cross-paper tuning recommendations |
+| `ai-paper-review-generate-db` | Generate a reviewer-database markdown from a YAML config |
 
 ---
 
@@ -82,8 +85,8 @@ cp config.example.yaml config.yaml
 ```yaml
 llm_review:
   provider: anthropic_api        # or: openai_api | google_api | xai_api | github_api |
-                                 #     copilot_sdk | claude_sdk | openai_compatible_api
-  model: claude-sonnet-4-5-20250929
+                                 #     claude_sdk | copilot_sdk | openai_compatible_api
+  model: claude-sonnet-4-6
 
 # llm_validation:                # optional — inherits llm_review when absent
 #   provider: openai_api
@@ -104,8 +107,8 @@ Each provider has a different setup flow — API key, PAT, SDK install, or local
 | Google Gemini | `google_api` | Direct | Create an API key at <https://aistudio.google.com/apikey> → `api_keys.google_api` or `GEMINI_API_KEY` (falls back to `GOOGLE_API_KEY`). |
 | xAI Grok | `xai_api` | Direct (grok-4-class models) | Create an API key at <https://console.x.ai/> → `api_keys.xai_api` or `XAI_API_KEY`. Base URL is hardcoded to `https://api.x.ai/v1`. |
 | GitHub Models | `github_api` | Text | Create a **fine-grained** GitHub Personal Access Token at <https://github.com/settings/tokens> (no repo scope needed) → `api_keys.github_api` or `GITHUB_TOKEN` (falls back to `GITHUB_PAT`). Browse the catalog at <https://github.com/marketplace/models>. |
-| GitHub Copilot SDK | `copilot_sdk` | Text | `pip install github-copilot-sdk` (already in `environment.yml`), then `gh auth login` once. **No API key needed** — the SDK inherits the Copilot CLI's local auth. Works alongside VSCode Copilot. |
 | Claude Agent SDK | `claude_sdk` | Direct | `pip install claude-agent-sdk` (already in `environment.yml`), then `claude /login` once via the [Claude Code CLI](https://docs.claude.com/en/docs/claude-code). **No API key needed** — the SDK inherits the CLI's login (shared with VSCode/JetBrains Claude extensions). Routes through your Claude Pro/Max/Team subscription. |
+| GitHub Copilot SDK | `copilot_sdk` | Text | `pip install github-copilot-sdk` (already in `environment.yml`), then `gh auth login` once. **No API key needed** — the SDK inherits the Copilot CLI's local auth. Works alongside VSCode Copilot. |
 | OpenAI-compatible | `openai_compatible_api` | Text | Point at any OpenAI-protocol endpoint via `base_url` under `llm_review` (e.g. Ollama `http://localhost:11434/v1`, vLLM / llama.cpp, Together, Groq, DeepSeek, Fireworks, Azure-style proxies). API key is **optional** when the base_url looks local; otherwise use `api_keys.openai_compatible_api` or `OPENAI_API_KEY`. |
 
 Full setup details, env-var precedence, rate-limiting presets, and per-stage provider split: [LLM providers](docs/llm_providers.md).
@@ -118,7 +121,7 @@ Launch with `ai-paper-review-web` and open **http://127.0.0.1:8000**. The server
 
 ### Model — set your LLM provider
 
-Open **Model** first. The page shows all seven providers as cards (green = ready; red = missing credentials or SDK). Below the grid, the **Review model** and **Validation model** sections let you pick the active provider, model, and optional base URL per stage — applied immediately for this session (env-var overrides) and cleared on server restart. For permanent defaults, edit `config.yaml` directly.
+Open **Model** first. The page shows all eight providers as cards (green = ready; red = missing credentials or SDK). Below the grid, the **Review model** and **Validation model** sections let you pick the active provider, model, and optional base URL per stage — applied immediately for this session (env-var overrides) and cleared on server restart. For permanent defaults, edit `config.yaml` directly.
 
 ### Review — review a paper
 
@@ -176,11 +179,11 @@ ai-paper-review-review \
     --db comparch_reviewer_db.md \        # defaults to the bundled computer_architecture DB
     --reviewers 7 \                    # N (default 10; hard range 1–20)
     --provider openai_api --model gpt-4o \ # per-run overrides, else config.yaml
-    --out review_report.md \           # override any of the five output paths
-    --data-out review_data.md \
-    --clarity-out clarity.md \
-    --similarities-out selection_sims.md \
-    --clustering-similarities-out clustering_sims.md
+    --out review_report.md \                    # default: <pdf_stem>_review.md
+    --data-out review_data.md \                 # default: <pdf_stem>_review_data.md
+    --clarity-out clarity.md \                  # default: <pdf_stem>_writing_clarity_review.md
+    --similarities-out selection_sims.md \      # default: <pdf_stem>_selection_similarities.md
+    --clustering-similarities-out clustering_sims.md  # default: <pdf_stem>_clustering_similarities.md
 ```
 
 ### Validate AI vs human review — `ai-paper-review-validate`
@@ -190,11 +193,22 @@ The CLI validator expects the human review to already be in AI-review-format mar
 ```bash
 ai-paper-review-validate \
     --actual my_paper_actual.md \
-    --ai-review paper_draft_review_data.md
-# → my_paper_actual_validation.md  +  my_paper_actual_calibration.json
+    --ai-review paper_draft_review_data.md \
+    --out my_validation.md \            # default: <actual>_validation.md
+    --calibration-out my_calibration.json   # default: <actual>_calibration.json
 ```
 
-Outputs the two primary files plus diagnostic artifacts (`alignment_similarities.md`, `alignment_ranking.md`, `alignment_llm_analysis.md`) into the same directory as `--out`. Full schema: [Validation Output Format](docs/validation_output_format.md). No `--provider` / `--model` flags — set the validation-stage LLM in `config.yaml` or via `PAPER_REVIEW_VALIDATION_PROVIDER_OVERRIDE` / `PAPER_REVIEW_VALIDATION_MODEL_OVERRIDE`.
+Writes five files into the same directory as `--out`:
+
+| File | Content |
+|---|---|
+| `<actual>_validation.md` | Validation report — miss analysis, metrics, calibration suggestions (human-readable). |
+| `<actual>_calibration.json` | Per-paper calibration delta JSON — input to `ai-paper-review-aggregate`. |
+| `alignment_llm_analysis.md` | Verbatim LLM prompt + response for the alignment step — full audit trail. |
+| `alignment_similarities.md` | N × M human-vs-AI comment similarity matrix; best match per human comment bolded. |
+| `alignment_ranking.md` | Human comments ranked by best-match similarity score, highest first. |
+
+Full schema: [Validation Output Format](docs/validation_output_format.md). No `--provider` / `--model` flags — set the validation-stage LLM in `config.yaml` or via `PAPER_REVIEW_VALIDATION_PROVIDER_OVERRIDE` / `PAPER_REVIEW_VALIDATION_MODEL_OVERRIDE`.
 
 ### Cross-paper aggregation — `ai-paper-review-aggregate`
 
@@ -204,8 +218,7 @@ After several validation runs accumulate, roll up their calibration deltas into 
 ai-paper-review-aggregate \
     'ai-paper-review-data/runs/validation_*/calibration_delta.json' \
     --min-support 2 \
-    --out recommendations.md
-# → recommendations.md  (markdown; also printed to stdout if --out omitted)
+    --out recommendations.md    # default: stdout if --out omitted
 ```
 
 Reporter only — it doesn't modify any config or database file; it prints suggestions that repeat across ≥ `min_support` papers. See [Aggregation](docs/aggregation.md) for the full design notes.
@@ -220,7 +233,7 @@ Three stages, each a separate surface. The review pipeline produces structured c
   INPUTS                      STAGE                             OUTPUTS
   ────────────────────        ──────────────────────            ─────────────────────────────
   paper.pdf               ──▶ [1] Review pipeline          ──▶  review_report.md
-  comparch_reviewer_db.md        (ingest → select N           ──▶  review_data.md
+  comparch_reviewer_db.md        (ingest → select N        ──▶  review_data.md
   N (1–20, default 10)         reviewers → clarity         ──▶  writing_clarity_review.md
   provider / model             reviewer → dispatch in      ──▶  selection_similarities.md
                                parallel → cluster → rank)  ──▶  clustering_similarities.md
@@ -273,7 +286,13 @@ Runtime behavior is tuned through a small set of knobs. The first group lives in
 
 ### Bring your own reviewer database
 
-The default Computer Architecture database is just one `.md` file; any other field is a swap. Build a reviewer database externally (see [Database Format](docs/database_format.md) for the YAML + markdown spec and a step-by-step walkthrough), then upload it on the **Database** page in the web UI. The page's **"Build a new database"** walkthrough has the LLM-expansion recipe plus the list of 20 canonical persona names you should reuse if you plan to run Validation — the calibration-attribution routing matches on persona names, and non-matching names silently become orphan entries.
+Two databases are bundled — **Computer Architecture** and **Machine Learning & AI** — each as a YAML config and a generated 200-reviewer markdown. For any other field:
+
+1. **Generate a config YAML** — use the prompt at `src/ai_paper_review/prompts/database_generation.md`: replace `[FIELD NAME]`, paste into any capable LLM, and get a complete YAML in one shot. Or copy one of the bundled `*_reviewer_cfg.yaml` files and edit it manually.
+2. **Generate the database** — run `ai-paper-review-generate-db --config my_field_cfg.yaml --out my_field_db.md`.
+3. **Upload it** — drop the `.md` on the **Database** page; the server parses it on upload and rejects malformed files with a clear error.
+
+See [Database Format](docs/database_format.md) for the full YAML and markdown spec.
 
 ### Tune LLM prompts
 
@@ -285,6 +304,7 @@ Every prompt the system sends is a standalone `.md` file in [`src/ai_paper_revie
 | `human_review_extraction_system.md` | Validation Stage 1 — reshape raw human-review text into AI-review markdown. |
 | `markdown_repair_system.md` + `markdown_repair_user.md` | Repair retry when a reviewer's (or the clarity reviewer's) first LLM output fails to parse. |
 | `batch_alignment_system.md` + `batch_alignment_user.md` | Validation Stage 3 — the single batch-similarity LLM call that produces the N × M matrix. |
+| `database_generation.md` | LLM prompt for generating a new reviewer-database YAML config for any field. Replace `[FIELD NAME]` and paste into any LLM. |
 
 The persona reviewers' system prompts live inside the reviewer-database `.md` (one per `#### R###` block), not in `prompts/` — that way a new reviewer database can ship an entirely different set of persona voices.
 
@@ -315,7 +335,7 @@ To add a provider: drop a new `llm/clients/<name>.py` implementing the protocol,
 ## Repo layout
 
 ```
-ai_paper_review/
+ai-paper-review/
 ├── README.md
 ├── pyproject.toml                       # declares CLI entry points + deps
 ├── environment.yml                      # conda env (conda for python+gh, pip -e . for the rest)
@@ -332,6 +352,7 @@ ai_paper_review/
 │
 ├── src/ai_paper_review/
 │   ├── __init__.py                      # ``default_db_path``; package __init__s expose nothing else
+│   ├── provenance.py                    # run-ID generation + provenance banner writer
 │   │
 │   ├── llm/                             # provider-agnostic LLM wrapper
 │   │   ├── __init__.py
@@ -347,8 +368,8 @@ ai_paper_review/
 │   │       ├── openai.py                # openai_api, also serves github_api / openai_compatible_api
 │   │       ├── google.py                # google_api
 │   │       ├── xai.py                   # xai_api (Responses API + /v1/files for PDFs)
-│   │       ├── copilot.py               # copilot_sdk (local async session)
-│   │       └── claude.py                # claude_sdk (Claude Code CLI)
+│   │       ├── claude.py                # claude_sdk (Claude Code CLI)
+│   │       └── copilot.py               # copilot_sdk (local async session)
 │   │
 │   ├── review/                          # review pipeline (`ai-paper-review-review`)
 │   │   ├── __init__.py
@@ -363,52 +384,64 @@ ai_paper_review/
 │   │   ├── ranking.py                   # cluster ranking + report formatter
 │   │   └── constants.py                 # N range, severity weights, retry caps
 │   │
-│   ├── validation/                      # validation umbrella (`ai-paper-review-validate`)
+│   ├── validation/                      # validation pipeline (`ai-paper-review-validate`)
 │   │   ├── __init__.py
-│   │   ├── validation.py                # primary CLI: ``ai-paper-review-validate`` (flat — no subcommands)
-│   │   ├── alignment.py                 # batch LLM similarity matrix
+│   │   ├── validation.py                # CLI ``main()`` — orchestrates all stages below
+│   │   ├── conversion.py                # reshape raw human reviews into AI-review markdown
+│   │   ├── loading.py                   # flatten human + AI markdown files into comment lists
+│   │   ├── alignment.py                 # batch LLM similarity matrix + diagnostic artifact writer
 │   │   ├── metrics.py                   # precision / recall / F1
 │   │   ├── calibration.py               # per-paper calibration delta builder
 │   │   ├── reporting.py                 # markdown validation report
-│   │   ├── conversion.py                # reshape raw human reviews into AI-review markdown
-│   │   ├── loading.py                   # flatten human + AI markdown files
-│   │   ├── routing.py                   # category / sub-rating → persona (loaded from the DB's attribution tables)
+│   │   ├── routing.py                   # category / sub-rating → persona (from DB attribution tables)
 │   │   └── constants.py                 # recommendation / severity vocabularies + batch-similarity thresholds
 │   │
-│   ├── aggregation/                     # cross-paper aggregation (post-pipeline reporter)
+│   ├── aggregation/                     # cross-paper aggregation (`ai-paper-review-aggregate`)
 │   │   ├── __init__.py
 │   │   └── aggregation.py               # aggregate N calibration_delta.json files into tuning recommendations
 │   │
 │   ├── prompts/                         # externalized LLM prompts, one .md per prompt
 │   │   ├── __init__.py                  # ``prompts.load(name, **kwargs)`` helper
-│   │   ├── shared_reviewer_system.md    # THE LLM ``system`` arg for every review session on a paper
-│   │   │                                  (identical across N persona reviewers + clarity, so the provider's
-│   │   │                                   prompt cache shares the (system + PDF) prefix across all of them)
-│   │   ├── writing_clarity_system.md    # clarity reviewer's role/scope, loaded INTO the user message
-│   │   ├── human_review_extraction_system.md
-│   │   ├── markdown_repair_system.md
+│   │   ├── shared_reviewer_system.md    # LLM ``system`` arg shared across all N persona reviewers + clarity
+│   │   │                                  (identical across calls → provider prompt cache reuses the
+│   │   │                                   (system + PDF) prefix across all parallel reviewer calls)
+│   │   ├── writing_clarity_system.md    # clarity reviewer's role/scope, loaded into the user message
+│   │   ├── human_review_extraction_system.md  # convert raw human review text → AI-review markdown
+│   │   ├── markdown_repair_system.md    # fix malformed AI-review markdown
 │   │   ├── markdown_repair_user.md
-│   │   ├── batch_alignment_system.md
-│   │   └── batch_alignment_user.md
+│   │   ├── batch_alignment_system.md    # batch similarity matrix prompt (validation stage)
+│   │   ├── batch_alignment_user.md
+│   │   └── database_generation.md       # LLM prompt for generating a new reviewer-database cfg YAML
 │   │
-│   ├── data/
-│   │   └── comparch_reviewer_db.md         # 200 reviewer prompts (bundled default)
+│   ├── database/                        # bundled databases + generation CLI
+│   │   ├── generation.py                # ``ai-paper-review-generate-db`` — YAML config → reviewer DB markdown
+│   │   ├── comparch_reviewer_cfg.yaml   # YAML source — Computer Architecture (bundled default)
+│   │   ├── comparch_reviewer_db.md      # 200 reviewer prompts — Computer Architecture (bundled default)
+│   │   ├── mlai_reviewer_cfg.yaml       # YAML source — Machine Learning & AI (bundled default)
+│   │   └── mlai_reviewer_db.md          # 200 reviewer prompts — Machine Learning & AI (bundled default)
 │   │
 │   └── web/                             # Flask UI (`ai-paper-review-web`), one module per route group
 │       ├── __init__.py
-│       ├── app.py                       # Flask `app` instance, paths, context processor, main()
+│       ├── app.py                       # Flask ``app`` instance, paths, context processor, ``main()``
 │       ├── jobs.py                      # in-memory JOBS / VALIDATE_JOBS state, rehydrate, run-id helpers
-│       ├── databases.py                 # /database routes (list / upload / view / delete reviewers)
-│       ├── review.py                    # /review routes + the review-pipeline worker thread
-│       ├── validation.py                # /validation routes + the validation-pipeline worker thread
+│       ├── review.py                    # /review routes + review-pipeline worker thread
+│       ├── validation.py                # /validation routes + validation-pipeline worker thread
 │       ├── aggregation.py               # /aggregation page (cross-paper aggregation surface)
+│       ├── databases.py                 # /database routes (list / upload / view / delete)
 │       ├── model.py                     # /model page (provider availability + session overrides)
 │       ├── docs.py                      # /docs browser (markdown rendering of docs/)
 │       ├── run_files.py                 # enumerate artifacts in a run directory for the result page
-│       ├── templates/*.html
+│       ├── templates/                   # Jinja2 HTML templates, one per page
 │       └── static/style.css
 │
-└── tests/                               # pytest suite
+└── tests/
+    ├── conftest.py                      # shared fixtures (mock LLM client, tmp paths)
+    ├── fixtures/                        # sample actual.md + ai.md for validation tests
+    ├── test_llm.py                      # LLM config loading + provider probing
+    ├── test_convert.py                  # human-review extraction + markdown repair
+    ├── test_validate.py                 # alignment, metrics, calibration, reporting
+    ├── test_provenance.py               # provenance banner generation
+    └── test_web.py                      # Flask route smoke tests
 ```
 
 Each pipeline package's ``__init__.py`` is intentionally empty — every name is reached via its explicit submodule path (e.g. ``from ai_paper_review.review.reviewer_db import Reviewer``). LLM prompts live in ``prompts/`` so editing them is a single ``.md`` change with no Python touched.

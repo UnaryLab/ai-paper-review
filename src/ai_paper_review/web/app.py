@@ -28,7 +28,7 @@ from typing import Any, Dict, Optional
 
 from flask import Flask
 
-from ai_paper_review import default_db_path
+from ai_paper_review import bundled_db_dir, bundled_db_paths, default_db_path
 from ai_paper_review.llm.config import load_config
 
 
@@ -43,6 +43,7 @@ RUNS_DIR.mkdir(parents=True, exist_ok=True)
 DATABASES_DIR.mkdir(parents=True, exist_ok=True)
 
 DEFAULT_DB_PATH = default_db_path()
+BUNDLED_DB_DIR = bundled_db_dir()
 
 
 def _find_docs_root() -> Optional[Path]:
