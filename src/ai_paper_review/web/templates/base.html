@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}AI Paper Review{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <header>
+    <nav>
+      <a href="{{ url_for('about') }}" class="brand">AI Paper Review</a>
+      <div class="nav-links">
+        <a href="{{ url_for('about') }}">About</a>
+        <a href="{{ url_for('model_settings') }}">Model</a>
+        <a href="{{ url_for('review_launcher') }}">Review</a>
+        <a href="{{ url_for('validate_form') }}">Validation</a>
+        <a href="{{ url_for('aggregate_view') }}">Aggregation</a>
+        <a href="{{ url_for('databases_list') }}">Database</a>
+        <a href="{{ url_for('docs_index') }}">Docs</a>
+      </div>
+    </nav>
+  </header>
+
+  <main>
+    {% if config_yaml_missing %}
+      <div class="warn">
+        <strong>No <code>config.yaml</code> found.</strong>
+        Expected at <code>{{ config_yaml_expected_path }}</code>.
+        Copy <code>config.example.yaml</code> to <code>config.yaml</code> and
+        fill in your API keys, or set <code>PAPER_REVIEW_CONFIG</code> to a
+        custom path. Without it, provider availability on the
+        <a href="{{ url_for('model_settings') }}">Model page</a> relies on
+        environment variables only.
+      </div>
+    {% endif %}
+
+    {% with messages = get_flashed_messages() %}
+      {% if messages %}
+        <div class="flash">
+          {% for m in messages %}<p>{{ m }}</p>{% endfor %}
+        </div>
+      {% endif %}
+    {% endwith %}
+
+    {% block content %}{% endblock %}
+  </main>
+
+  <footer>
+    <small>Developed by Di Wu · <a href="https://www.unarylab.com" rel="noopener">Homepage</a> · <a href="https://github.com/diwu1990/ai-paper-review" rel="noopener">GitHub</a></small>
+  </footer>
+
+  {% block scripts %}{% endblock %}
+</body>
+</html>

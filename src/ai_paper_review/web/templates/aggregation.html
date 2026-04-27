@@ -1,0 +1,136 @@
+{% extends "base.html" %}
+{% block title %}Cross-paper aggregation{% endblock %}
+{% block content %}
+  <section>
+    <h1>Cross-paper aggregation</h1>
+    <p class="lede">
+      Evolve your reviewer database from accumulated validation evidence.
+      Suggestions that repeat across ≥ min_support papers surface as
+      tuning advice; one-offs drop out. This page is a reporter — edits
+      to the reviewer-database YAML are always applied by hand.
+    </p>
+    <p class="hint">
+      See <a href="{{ url_for('docs_view', slug='aggregation') }}">Aggregation</a>
+      for the full rationale, suggestion-to-YAML mapping, and scripted-usage examples.
+    </p>
+  </section>
+
+  {% if n_papers == 0 %}
+    <section class="card">
+      <h2>No validations yet</h2>
+      <p>
+        Run <a href="{{ url_for('validate_form') }}">Validation</a> on at
+        least two papers first — then come back here to see which
+        tuning suggestions repeat across them.
+      </p>
+    </section>
+  {% else %}
+    <section class="card">
+      <div style="display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; flex-wrap: wrap;">
+        <div>
+          <h2 style="margin: 0;">Summary</h2>
+          <p class="muted" style="margin: 0.3rem 0 0 0;">
+            <strong>{{ recommendations|length }}</strong>
+            recommendation{{ 's' if recommendations|length != 1 }}
+            surfaced from <strong>{{ n_papers }}</strong>
+            validation run{{ 's' if n_papers != 1 }}
+            (min_support = {{ min_support }}).
+          </p>
+        </div>
+        <form method="get" action="{{ url_for('aggregate_view') }}"
+              style="display: flex; align-items: center; gap: 0.5rem;">
+          <label for="min_support" style="margin: 0;">min_support</label>
+          <input type="number" name="min_support" id="min_support"
+                 value="{{ min_support }}" min="1" max="{{ n_papers }}"
+                 step="1" style="width: 5rem;">
+          <button type="submit" class="button">Apply</button>
+        </form>
+      </div>
+    </section>
+
+    {% if recommendations %}
+      <section>
+        <h2 style="margin-bottom: 0.6rem;">Recommendations (≥ {{ min_support }} papers)</h2>
+        {% for r in recommendations %}
+          <article class="issue issue-major" style="border-left-color: var(--moderate);">
+            <header>
+              <span class="pill pill-info">{{ r.type }}</span>
+              <strong>{{ r.target }}</strong>
+              <span class="sev-chip sev-moderate">
+                {{ r.support }} paper{{ 's' if r.support != 1 }}
+              </span>
+            </header>
+            <p><strong>Recommendation.</strong> {{ r.recommendation }}</p>
+            <p class="muted" style="font-size: 0.9rem; margin: 0.3rem 0;">
+              Contributing papers: {% for pid in r.paper_ids %}<code>{{ pid }}</code>{% if not loop.last %}, {% endif %}{% endfor %}
+            </p>
+            {% if r.example_misses %}
+              <details>
+                <summary>Example misses ({{ r.example_misses|length }})</summary>
+                <ul style="margin: 0.4rem 0 0 1.2rem;">
+                  {% for m in r.example_misses %}
+                    <li>{{ m[:300] }}</li>
+                  {% endfor %}
+                </ul>
+              </details>
+            {% endif %}
+          </article>
+        {% endfor %}
+      </section>
+    {% else %}
+      <section class="card">
+        <p>
+          No suggestion repeats across <strong>{{ min_support }}</strong>
+          or more papers yet. Either lower <code>min_support</code> above
+          to see near-misses, or run validation on more papers — a
+          repeating pattern with 2–3 papers of support is the signal
+          aggregation is designed to surface.
+        </p>
+      </section>
+    {% endif %}
+
+    {% if below_threshold %}
+      <section class="card">
+        <details>
+          <summary>
+            <strong>Below threshold</strong>
+            ({{ below_threshold|length }}
+            suggestion{{ 's' if below_threshold|length != 1 }} with
+            support &lt; {{ min_support }})
+          </summary>
+          <p class="muted" style="margin-top: 0.6rem;">
+            These haven't repeated across enough papers to count as
+            robust signal. Kept here so you can spot near-misses and
+            lower <code>min_support</code> if you think a pattern is
+            about to emerge.
+          </p>
+          <ul style="margin: 0.5rem 0 0 1.2rem; line-height: 1.7;">
+            {% for r in below_threshold %}
+              <li>
+                <span class="pill pill-info">{{ r.type }}</span>
+                <strong>{{ r.target }}</strong>
+                <span class="muted">
+                  (support {{ r.support }}; papers:
+                  {% for pid in r.paper_ids %}<code>{{ pid }}</code>{% if not loop.last %}, {% endif %}{% endfor %})
+                </span>
+              </li>
+            {% endfor %}
+          </ul>
+        </details>
+      </section>
+    {% endif %}
+
+    <section class="card">
+      <details>
+        <summary class="muted">
+          Source files ({{ source_paths|length }})
+        </summary>
+        <ul style="margin: 0.5rem 0 0 1.2rem; line-height: 1.7;">
+          {% for p in source_paths %}
+            <li><code>{{ p }}</code></li>
+          {% endfor %}
+        </ul>
+      </details>
+    </section>
+  {% endif %}
+{% endblock %}

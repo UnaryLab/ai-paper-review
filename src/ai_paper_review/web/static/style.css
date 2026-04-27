@@ -1,0 +1,812 @@
+/* -----------------------------------------------------------------------
+   Paper Review System — stylesheet
+   Clean and restrained. System fonts, generous spacing, minimal color.
+   ----------------------------------------------------------------------- */
+
+:root {
+  --bg: #fafaf9;
+  --card: #ffffff;
+  --ink: #1f2328;
+  --muted: #6b7280;
+  --line: #e5e7eb;
+  --accent: #2563eb;
+  --accent-hover: #1d4ed8;
+  --warn: #b45309;
+  --warn-bg: #fef3c7;
+  /* Severity palette. Three tiers:
+       major    = red  (would block acceptance)
+       moderate = blue (significant revision required)
+       minor    = gray (improvement but not blocking)
+  */
+  --major:      #b91c1c;
+  --major-bg:   #fee2e2;
+  --moderate:   #1d4ed8;
+  --moderate-bg: #dbeafe;
+  --minor:      #4b5563;
+  --minor-bg:   #f3f4f6;
+  /* Generic red used for UI errors / unavailable-provider states — distinct
+     from the severity palette above. */
+  --danger:     #b91c1c;
+  --danger-bg:  #fee2e2;
+  --success: #166534;
+  --success-bg: #dcfce7;
+  --done: #166534;
+  --error: #991b1b;
+  --queued: #6b7280;
+  --running: #1d4ed8;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  line-height: 1.55;
+  font-size: 15px;
+}
+
+header {
+  background: var(--card);
+  border-bottom: 1px solid var(--line);
+}
+
+nav {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 1rem 1.5rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.brand {
+  font-weight: 600;
+  color: var(--ink);
+  text-decoration: none;
+  font-size: 1.05rem;
+}
+
+.nav-links a {
+  margin-left: 1.5rem;
+  color: var(--muted);
+  text-decoration: none;
+}
+.nav-links a:hover { color: var(--ink); }
+
+main {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 2rem 1.5rem 4rem;
+}
+
+footer {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 2rem 1.5rem;
+  color: var(--muted);
+  border-top: 1px solid var(--line);
+}
+
+h1 { font-size: 1.8rem; margin: 0 0 0.75rem; }
+h2 { font-size: 1.35rem; margin: 1.5rem 0 0.75rem; }
+h3 { font-size: 1.05rem; margin: 0 0 0.5rem; }
+
+.lede { color: var(--muted); font-size: 1.05rem; }
+.muted { color: var(--muted); }
+.hint { color: var(--muted); font-size: 0.9rem; }
+
+code {
+  font-family: var(--mono);
+  font-size: 0.88em;
+  background: #f1f5f9;
+  padding: 0.1rem 0.35rem;
+  border-radius: 3px;
+}
+
+pre {
+  background: #f1f5f9;
+  padding: 1rem 1.25rem;
+  border-radius: 6px;
+  overflow-x: auto;
+  font-family: var(--mono);
+  font-size: 0.85rem;
+  line-height: 1.5;
+}
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 1.5rem;
+  margin: 1.5rem 0;
+}
+
+.hero {
+  padding: 2rem 0 1rem;
+}
+.hero .stats {
+  display: flex;
+  gap: 2rem;
+  margin-top: 1rem;
+}
+.hero .stats div {
+  display: flex;
+  flex-direction: column;
+}
+.hero .stats strong { font-size: 1.6rem; color: var(--ink); }
+.hero .stats span { color: var(--muted); font-size: 0.9rem; }
+
+/* ---- provider picker grid ---- */
+
+.subhead {
+  color: var(--muted);
+  font-size: 0.9rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin: 1.25rem 0 0.5rem;
+}
+
+.provider-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 0.6rem;
+  margin: 0.5rem 0 1.25rem;
+}
+
+.provider-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding: 0.75rem 0.9rem;
+  border: 1.5px solid var(--line);
+  border-radius: 6px;
+  background: var(--card);
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+  position: relative;
+}
+.provider-card input[type="radio"] {
+  position: absolute;
+  top: 0.5rem;
+  right: 0.6rem;
+}
+
+.provider-available          { border-color: #a7f3d0; background: #f0fdf4; }
+.provider-available:hover    { border-color: var(--success); }
+.provider-unavailable        { border-color: #fecaca; background: #fef2f2; color: #7f1d1d; }
+.provider-unavailable:hover  { border-color: var(--danger); }
+
+.provider-head {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-weight: 500;
+  font-size: 0.95rem;
+}
+.provider-name { flex: 1; }
+.provider-meta {
+  display: flex;
+  gap: 0.4rem;
+  align-items: center;
+  font-size: 0.82rem;
+}
+
+.provider-dot {
+  display: inline-block;
+  width: 0.65rem;
+  height: 0.65rem;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.dot-green { background: #16a34a; box-shadow: 0 0 0 3px rgba(22,163,74,0.15); }
+.dot-red   { background: #dc2626; box-shadow: 0 0 0 3px rgba(220,38,38,0.15); }
+
+.badge {
+  font-size: 0.72rem;
+  padding: 0.1rem 0.5rem;
+  border-radius: 3px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.badge-ok  { background: var(--success-bg); color: var(--success); }
+.badge-err { background: var(--danger-bg); color: var(--danger); }
+
+.pill-available   { background: var(--success-bg); color: var(--success); }
+.pill-unavailable { background: var(--danger-bg); color: var(--danger); }
+
+.grid-2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1.5rem;
+}
+@media (max-width: 720px) { .grid-2 { grid-template-columns: 1fr; } }
+
+/* -------- buttons & forms ------------------------------------------------ */
+
+button, .button, input[type="submit"] {
+  display: inline-block;
+  padding: 0.55rem 1.1rem;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+  background: var(--card);
+  color: var(--ink);
+  font-size: 0.95rem;
+  cursor: pointer;
+  text-decoration: none;
+  line-height: 1.2;
+}
+button:hover, .button:hover { background: #f8fafc; }
+button.primary, input[type="submit"].primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: white;
+}
+button.primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+
+/* Destructive action — red tint so users don't fat-finger it */
+button.button-danger, .button-danger {
+  color: #b91c1c;
+  border-color: #fecaca;
+  background: #fef2f2;
+}
+button.button-danger:hover, .button-danger:hover {
+  background: #fee2e2;
+  border-color: #fca5a5;
+}
+
+/* Inline text-link-styled button (used in table rows next to "View" / "Status") */
+button.link-button, .link-button {
+  padding: 0;
+  background: transparent;
+  border: none;
+  color: #b91c1c;
+  font-size: 0.95rem;
+  text-decoration: underline;
+  cursor: pointer;
+}
+button.link-button:hover, .link-button:hover { background: transparent; color: #7f1d1d; }
+
+label { font-size: 0.9rem; color: var(--muted); display: block; margin-top: 0.5rem; }
+input[type="text"], input[type="search"], select, textarea {
+  font: inherit;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--card);
+  min-width: 16rem;
+}
+select { min-width: 12rem; }
+
+.file-input {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.75rem 1rem;
+  border: 1.5px dashed var(--line);
+  border-radius: 6px;
+  cursor: pointer;
+  background: var(--card);
+  margin: 0.5rem 0;
+}
+.file-input input[type="file"] { max-width: 24rem; }
+.file-input span { color: var(--muted); font-size: 0.9rem; }
+
+.download-row { display: flex; gap: 0.75rem; margin: 1rem 0; flex-wrap: wrap; }
+
+.filter-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  align-items: flex-end;
+}
+.filter-form label { margin: 0; }
+
+/* -------- tables --------------------------------------------------------- */
+
+table.rows {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.93rem;
+}
+table.rows th, table.rows td {
+  text-align: left;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+}
+table.rows th { color: var(--muted); font-weight: 500; font-size: 0.85rem; }
+
+/* Fixed-column variant used by the "Source files on disk" panel on the
+ * Review and Validation result pages. Without table-layout: fixed each
+ * table picks its own column widths based on its content — which means
+ * the Inputs and Outputs tables on the same page end up misaligned
+ * (long absolute paths in one, short ones in the other, and the
+ * Description column shifts around accordingly). Forcing consistent
+ * widths makes the two tables read as a single stacked catalog. */
+table.rows.run-files {
+  table-layout: fixed;
+}
+table.rows.run-files col.col-file        { width: 52%; }
+table.rows.run-files col.col-size        { width: 5.5rem; }
+table.rows.run-files col.col-description { width: auto; }
+/* Long absolute paths shouldn't blow out the layout. Break them on any
+ * character so the column stays inside its declared width. */
+table.rows.run-files td code {
+  word-break: break-all;
+}
+
+/* -------- pills & badges ------------------------------------------------- */
+
+.pill {
+  display: inline-block;
+  padding: 0.15rem 0.6rem;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  background: var(--minor-bg);
+  color: var(--minor);
+  font-weight: 500;
+  letter-spacing: 0.02em;
+}
+.pill-done       { background: var(--success-bg); color: var(--success); }
+.pill-error      { background: var(--danger-bg); color: var(--danger); }
+.pill-queued     { background: var(--minor-bg);    color: var(--minor); }
+.pill-ingesting,
+.pill-selecting,
+.pill-reviewing,
+.pill-clustering { background: #dbeafe; color: var(--running); }
+
+/* -------- status / progress --------------------------------------------- */
+
+.status-line {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+  margin-top: 1rem;
+}
+.progress {
+  height: 10px;
+  background: var(--line);
+  border-radius: 99px;
+  margin-top: 1rem;
+  overflow: hidden;
+}
+.progress-bar {
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.8s ease;
+}
+
+/* Per-reviewer progress list (shown during sequential reviewing) */
+
+.reviewer-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.45rem 0.5rem;
+  border-bottom: 1px solid var(--line);
+  font-size: 0.9rem;
+}
+.reviewer-row:last-child { border-bottom: none; }
+.reviewer-icon {
+  width: 1.4rem;
+  text-align: center;
+  font-size: 1rem;
+  flex-shrink: 0;
+}
+.reviewer-done .reviewer-icon { color: var(--success); font-weight: 700; }
+.reviewer-active .reviewer-icon { color: var(--accent); }
+.reviewer-pending .reviewer-icon { color: var(--muted); }
+.reviewer-label { flex: 1; }
+.reviewer-label code { font-size: 0.82em; }
+.reviewer-comments { color: var(--muted); font-size: 0.82rem; }
+.reviewer-active { background: #eff6ff; border-radius: 4px; }
+.reviewer-pending { color: var(--muted); }
+
+@keyframes spin { to { transform: rotate(360deg); } }
+.spinner { display: inline-block; animation: spin 1.2s linear infinite; }
+
+/* -------- issues (review + validation) ---------------------------------- */
+
+.issue {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--minor);
+  border-radius: 6px;
+  padding: 1rem 1.25rem;
+  margin: 0.8rem 0;
+}
+.issue-major    { border-left-color: var(--major); }
+.issue-moderate { border-left-color: var(--moderate); }
+.issue-minor    { border-left-color: var(--minor); }
+
+.issue header {
+  display: flex;
+  align-items: baseline;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+.issue header h3 { margin: 0; font-size: 1.02rem; }
+.rank {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 0.9rem;
+}
+.sev {
+  display: inline-block;
+  padding: 0.1rem 0.45rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+  border-radius: 3px;
+  letter-spacing: 0.05em;
+}
+.sev-major    { background: var(--major-bg);    color: var(--major); }
+.sev-moderate { background: var(--moderate-bg); color: var(--moderate); }
+.sev-minor    { background: var(--minor-bg);    color: var(--minor); }
+
+.issue-meta {
+  color: var(--muted);
+  font-size: 0.87rem;
+  display: flex;
+  gap: 1.25rem;
+  flex-wrap: wrap;
+  margin: 0.5rem 0 0.75rem;
+}
+
+/* Inner card for an individual AI comment shown inside a validation
+   hit's drill-down. Lighter than .issue so the outer hit block stays
+   visually dominant; border-left takes the AI comment's own severity
+   colour via .issue-major / .issue-moderate / .issue-minor. */
+.ai-match {
+  background: rgba(0, 0, 0, 0.015);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--minor);
+  border-radius: 4px;
+  padding: 0.6rem 0.9rem;
+  margin: 0.4rem 0;
+}
+.ai-match.issue-major    { border-left-color: var(--major); }
+.ai-match.issue-moderate { border-left-color: var(--moderate); }
+.ai-match.issue-minor    { border-left-color: var(--minor); }
+.ai-match header {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  font-size: 0.9rem;
+}
+
+.alt-phrasings { font-size: 0.9rem; color: var(--fg); padding-left: 1.25rem; }
+.alt-phrasings li {
+  margin: 0.75rem 0;
+  padding: 0.4rem 0 0.4rem 0.6rem;
+  border-left: 2px solid var(--line);
+}
+.alt-phrasing-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.2rem;
+}
+.alt-phrasing-summary { margin: 0.3rem 0 0 0; }
+.alt-phrasing-description { margin: 0.3rem 0 0 0; color: var(--fg); }
+
+/* -------- reviewer DB cards --------------------------------------------- */
+
+.reviewer-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 1rem;
+}
+.reviewer-card {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 1rem;
+}
+.reviewer-card header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 0.3rem;
+}
+.reviewer-card .rid {
+  font-family: var(--mono);
+  font-size: 1rem;
+  color: var(--accent);
+  text-decoration: none;
+  font-weight: 600;
+}
+.reviewer-card .persona { color: var(--muted); font-size: 0.85rem; }
+.reviewer-card .domain { font-size: 0.88rem; color: var(--ink); margin: 0.1rem 0 0.6rem; }
+.reviewer-card .focus { font-size: 0.86rem; color: var(--muted); margin: 0 0 0.8rem; line-height: 1.45; }
+.reviewer-card .keywords { margin: 0; }
+.reviewer-card .keywords code { margin-right: 0.25rem; font-size: 0.78rem; }
+
+.prompt {
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  max-height: 32rem;
+  overflow-y: auto;
+}
+
+/* -------- validation-specific ------------------------------------------- */
+
+.metric-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+  gap: 0.75rem;
+  margin: 1.5rem 0;
+}
+.metric {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0.9rem 1rem;
+}
+.metric strong {
+  display: block;
+  font-size: 1.65rem;
+  line-height: 1;
+  margin-bottom: 0.2rem;
+}
+.metric span { font-size: 0.82rem; color: var(--muted); display: block; }
+.metric small { color: var(--muted); font-size: 0.75rem; }
+
+.suggestion {
+  background: #fcfcfd;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--accent);
+  border-radius: 4px;
+  padding: 0.8rem 1rem;
+  margin: 0.8rem 0;
+}
+.suggestion-reduce_persona_noise { border-left-color: var(--warn); }
+.suggestion-sub_rating_signal    { border-left-color: var(--major); }
+.suggestion-strengthen_persona_prompt { border-left-color: var(--accent); }
+.suggestion-topical_gap          { border-left-color: var(--danger); }
+.suggestion header {
+  display: flex;
+  align-items: baseline;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.3rem;
+}
+
+.warn {
+  background: var(--warn-bg);
+  color: var(--warn);
+  border: 1px solid #fde68a;
+  border-radius: 6px;
+  padding: 0.75rem 1rem;
+  margin: 1rem 0;
+}
+.warn-text { color: var(--warn); }
+.warn-badge {
+  background: var(--danger-bg);
+  color: var(--danger);
+  border-radius: 4px;
+  padding: 0.1rem 0.45rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.flash {
+  background: var(--warn-bg);
+  color: var(--warn);
+  border: 1px solid #fcd34d;
+  border-radius: 6px;
+  padding: 0.75rem 1rem;
+  margin-bottom: 1.5rem;
+}
+.flash p { margin: 0.2rem 0; }
+
+details { margin: 0.5rem 0; }
+summary { cursor: pointer; color: var(--accent); font-size: 0.9rem; }
+
+/* Base URL display in provider cards */
+.base-url-text {
+  font-size: 0.72rem;
+  word-break: break-all;
+}
+
+/* ---------- /docs renderer ---------- */
+.docs-layout {
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  gap: 2rem;
+  margin-top: 1rem;
+}
+@media (max-width: 900px) {
+  .docs-layout { grid-template-columns: 1fr; }
+}
+.docs-sidebar {
+  position: sticky;
+  top: 1rem;
+  align-self: flex-start;
+  padding: 1rem;
+  background: #f8fafc;
+  border-radius: 8px;
+  font-size: 0.9rem;
+}
+.docs-sidebar h3 {
+  margin: 0 0 0.6rem 0;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  color: #64748b;
+  letter-spacing: 0.05em;
+}
+.docs-nav {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.docs-nav li { padding: 0.2rem 0; }
+.docs-nav li.active a { font-weight: 600; color: #0f172a; }
+.docs-nav a { text-decoration: none; color: #334155; }
+.docs-nav a:hover { text-decoration: underline; }
+
+.docs-article {
+  max-width: 52rem;
+  line-height: 1.6;
+  color: #0f172a;
+}
+.docs-article h1 { font-size: 1.9rem; margin-top: 0; }
+.docs-article h2 { font-size: 1.4rem; margin-top: 2rem;
+                   border-bottom: 1px solid #e2e8f0; padding-bottom: 0.3rem; }
+.docs-article h3 { font-size: 1.15rem; margin-top: 1.5rem; }
+.docs-article h4 { font-size: 1.0rem; margin-top: 1.2rem; color: #334155; }
+.docs-article code {
+  background: #f1f5f9;
+  padding: 0.1rem 0.3rem;
+  border-radius: 3px;
+  font-size: 0.92em;
+}
+.docs-article pre {
+  background: #0f172a;
+  color: #e2e8f0;
+  padding: 1rem;
+  border-radius: 6px;
+  overflow-x: auto;
+  font-size: 0.85rem;
+  line-height: 1.5;
+}
+.docs-article pre code {
+  background: transparent;
+  color: inherit;
+  padding: 0;
+}
+.docs-article table {
+  border-collapse: collapse;
+  margin: 1rem 0;
+  width: 100%;
+  font-size: 0.92rem;
+}
+.docs-article th, .docs-article td {
+  border: 1px solid #e2e8f0;
+  padding: 0.5rem 0.8rem;
+  text-align: left;
+  vertical-align: top;
+}
+.docs-article th { background: #f8fafc; font-weight: 600; }
+.docs-article blockquote {
+  border-left: 4px solid #cbd5e1;
+  padding-left: 1rem;
+  color: #475569;
+  margin: 1rem 0;
+}
+.docs-article ul, .docs-article ol { padding-left: 1.5rem; }
+.docs-article li { margin: 0.25rem 0; }
+.docs-article a { color: #2563eb; }
+.docs-article hr { border: 0; border-top: 1px solid #e2e8f0; margin: 2rem 0; }
+
+/* ---- About page: three-step workflow ---- */
+.workflow-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+.workflow-step {
+  display: flex;
+  align-items: flex-start;
+  gap: 1rem;
+  padding: 1rem 1.25rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface, #fff);
+}
+.workflow-num {
+  flex: 0 0 2.25rem;
+  height: 2.25rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--ink);
+  color: #fff;
+  font-weight: 700;
+  font-size: 1.05rem;
+  font-family: var(--mono);
+}
+.workflow-body { flex: 1 1 auto; min-width: 0; }
+.workflow-body h3 { margin: 0 0 0.25rem 0; font-size: 1.05rem; }
+.workflow-body h3 a { text-decoration: none; }
+.workflow-body h3 a:hover { text-decoration: underline; }
+.workflow-body p { margin: 0.4rem 0; }
+.workflow-arrow {
+  align-self: center;
+  color: var(--muted);
+  font-size: 1.4rem;
+  line-height: 1;
+  padding: 0.3rem 0;
+  user-select: none;
+}
+
+
+/* Copy-pasteable prompt block on the Database page */
+pre.prompt-block {
+  background: #f9fafb;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 1rem 1.25rem;
+  font-family: var(--mono);
+  font-size: 0.82rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-x: auto;
+  margin: 0.75rem 0;
+}
+
+/* Severity-composition chips in cluster headers — show how many of each
+   severity are in the cluster, so a score-6 MINOR cluster reads as
+   "6 minor" (six reviewers all flagged this as minor) rather than as
+   a mystery. */
+.sev-mix {
+  display: inline-flex;
+  gap: 0.3rem;
+  align-items: center;
+  margin-left: 0.5rem;
+}
+.sev-chip {
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 0.15rem 0.45rem;
+  border-radius: 3px;
+  line-height: 1.2;
+  letter-spacing: 0.01em;
+}
+.sev-chip.sev-major    { background: var(--major-bg);    color: var(--major); }
+.sev-chip.sev-moderate { background: var(--moderate-bg); color: var(--moderate); }
+.sev-chip.sev-minor    { background: var(--minor-bg);    color: var(--minor); }
+
+/* Intermediate artifacts block on the validation result page —
+   collapsed by default, shows download links for raw LLM outputs and
+   the pairwise similarity matrix. Useful for debugging why pairs
+   scored as they did. */
+.intermediate-files {
+  margin: 0.8rem 0 0 0;
+  padding: 0.7rem 0.9rem;
+  background: var(--panel-bg, #f8f9fb);
+  border: 1px solid var(--border, #e1e4ea);
+  border-radius: 4px;
+  font-size: 0.95rem;
+}
+.intermediate-files summary {
+  cursor: pointer;
+}
+.intermediate-files .download-list {
+  margin: 0.5rem 0 0 0;
+  padding-left: 1.2rem;
+}
+.intermediate-files .download-list li {
+  margin-bottom: 0.25rem;
+}
+.intermediate-files .small {
+  font-size: 0.88rem;
+  margin: 0.3rem 0 0.5rem 0;
+}

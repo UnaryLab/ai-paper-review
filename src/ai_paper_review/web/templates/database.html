@@ -1,0 +1,297 @@
+{% extends "base.html" %}
+{% block title %}AI review database{% endblock %}
+{% block content %}
+  <section>
+    <h1>AI review database</h1>
+    <p class="lede">
+      A reviewer database is a markdown file defining a pool of AI reviewer
+      personas for a specific field. The bundled default covers computer
+      architecture. To run reviews for a different field, build a database
+      externally and upload it here.
+    </p>
+  </section>
+
+  <section class="card">
+    <h2>Available databases</h2>
+    <p class="muted" style="font-size: 0.9rem;">
+      Source files on disk: <code>{{ databases_dir }}</code>
+    </p>
+    <table class="rows">
+      <thead>
+        <tr><th>Database</th><th>Reviewers</th><th>Path</th><th></th></tr>
+      </thead>
+      <tbody>
+        {% for db in databases %}
+          <tr>
+            <td>
+              {{ db.label }}
+            </td>
+            <td>{{ db.n_reviewers }}</td>
+            <td class="muted" style="font-size: 0.8rem;"><code>{{ db.path }}</code></td>
+            <td>
+              <div style="display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap;">
+                <a href="{{ url_for('databases_view', name=db.id) }}">View</a>
+                {% if db.can_delete %}
+                  <form method="post" action="{{ url_for('databases_delete', name=db.id) }}"
+                        style="display:inline; margin: 0;"
+                        onsubmit="return confirm('Delete database {{ db.id }}? The .md file will be removed.');">
+                    <button type="submit" class="link-button" title="Delete this database">Delete</button>
+                  </form>
+                {% else %}
+                  <span class="pill pill-info"
+                        title="The bundled default — cannot be deleted">default</span>
+                {% endif %}
+              </div>
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+
+  <section class="card">
+    <h2>Upload a database</h2>
+    <p>
+      Upload a <code>.md</code> reviewer database file. The file is parsed on
+      upload; malformed databases are rejected with an error message.
+    </p>
+    <form method="post" action="{{ url_for('databases_upload') }}" enctype="multipart/form-data">
+      <label class="file-input">
+        <input type="file" name="database" accept=".md" required>
+        <span>Choose a .md database file</span>
+      </label>
+      <div style="margin-top: 1rem;">
+        <button type="submit" class="primary">Upload</button>
+      </div>
+    </form>
+    <p class="hint" style="margin-top: 1rem;">
+      For filename rules, naming conventions, and how labels in the table are
+      derived, see the <strong>Filename handling</strong> section in
+      <a href="{{ url_for('docs_view', slug='database-format') }}">Database Format</a>.
+    </p>
+  </section>
+
+  <section class="card">
+    <h2>Build a new database with an external AI</h2>
+    <p>
+      This tool does not ship a generator — only the bundled
+      computer-architecture default is built in. For any other research
+      field, the recommended workflow is to hand a compact
+      YAML configuration (listing field, domains,
+      personas) to a strong general-purpose LLM (Claude, GPT, Gemini, …
+      whichever you have access to) and ask it to expand that config into a
+      full reviewer-database markdown file.
+    </p>
+
+    <h3 style="margin-top: 1.5rem;">Step 1 — Start from the YAML template</h3>
+    <p>
+      Download the bundled config as a starting point:
+    </p>
+    <p style="margin: 0.5rem 0 1rem 0;">
+      <a class="button" href="{{ url_for('databases_download_template') }}"
+         download="reviewer_database_config.yaml">Download template YAML</a>
+    </p>
+    <p>
+      Open the file and edit the following keys:
+    </p>
+    <ol style="margin: 0.5rem 0 1rem 1.5rem; line-height: 1.8;">
+      <li><code>field</code> — short name of your research area (e.g.
+        <code>"computer vision"</code>, <code>"cryptography"</code>,
+        <code>"programming languages"</code>).</li>
+      <li><code>domains</code> — the sub-areas in your field. Aim for
+        ~10 domains with good coverage of the field's
+        important sub-areas. Each domain has an <code>id</code>
+        (<code>D1..DN</code>), a <code>name</code>, short keyword list, and
+        typical <code>venues</code>.</li>
+      <li><code>personas</code> — the reviewer archetypes. Aim for
+        ~20 personas covering a range of review styles
+        (strict methodologist, practical engineer, theorist, first-principles
+        skeptic, writing pedant, …). Each persona has a
+        <code>name</code>, <code>priority</code> concerns, and
+        <code>style</code> description.</li>
+      <li><code>validation_attribution</code> — optional, but
+        <strong>required if you plan to validate AI reviews against human
+        reviews using this database</strong>. Three sub-keys —
+        <code>category_vocab</code> (closed list of category strings),
+        <code>category_to_persona</code> (lowercase category → persona
+        name), and <code>sub_rating_to_persona</code> (sub-rating name →
+        persona name). Every persona on the right-hand side must match a
+        <code>name</code> from the <code>personas:</code> list above.
+        See <a href="{{ url_for('docs_view', slug='database-format') }}">Database
+        Format §1.4</a> for the field-by-field spec.</li>
+    </ol>
+
+    <div class="warn" role="note" style="margin-top: 1rem;">
+      <strong>Persona-name requirement for full validation attribution.</strong>
+      The <em>review</em> pipeline accepts any persona names you pick. The
+      <em>validation</em> pipeline, however, routes missed / partial comments
+      back to a persona via a fixed map of 20 canonical names. Personas whose
+      <code>name</code> doesn't appear in that DB's attribution tables still
+      generate reviews normally but receive <strong>no miss / false-alarm
+      attribution</strong> during validation — they show up as orphan
+      entries in the calibration report. Each DB now ships its own
+      attribution tables (section 7 of the DB markdown, <strong>Validation
+      Attribution Tables</strong>), so a custom DB with field-specific
+      personas just declares its own category / sub-rating → persona
+      maps alongside the reviewer entries.
+      <details style="margin-top: 0.6rem;">
+        <summary style="cursor: pointer;">The 20 canonical persona names shipped with the bundled DB</summary>
+        <ul style="margin: 0.5rem 0 0 1.5rem; line-height: 1.7; columns: 2;">
+          <li>Novelty Hunter</li>
+          <li>Methodology Critic</li>
+          <li>Literature Scholar</li>
+          <li>Empirical Evaluator</li>
+          <li>Theorist</li>
+          <li>Industry Pragmatist</li>
+          <li>Scalability Analyst</li>
+          <li>Performance Specialist</li>
+          <li>Energy &amp; Efficiency Advocate</li>
+          <li>Reproducibility Champion</li>
+          <li>Clarity &amp; Presentation Editor</li>
+          <li>Benchmark &amp; Workload Expert</li>
+          <li>Hardware Implementation Engineer</li>
+          <li>Software/Systems Integrator</li>
+          <li>Security &amp; Correctness Auditor</li>
+          <li>Cost-Benefit Analyst</li>
+          <li>Deployment Veteran</li>
+          <li>Formal Methods Expert</li>
+          <li>Cross-Disciplinary Thinker</li>
+          <li>Visionary &amp; Future-Work Critic</li>
+        </ul>
+        <p class="muted" style="font-size: 0.85rem; margin-top: 0.6rem;">
+          Source of truth: the <code>## 7. Validation Attribution Tables</code> section
+          of the bundled <code>comparch_reviewer_db.md</code>. Custom DBs can
+          override these maps by writing their own section 7.
+        </p>
+      </details>
+    </div>
+
+    <p class="hint">
+      Final reviewer count = <strong>domains × personas</strong>. The
+      bundled default is 10 × 20 = 200 reviewers. A smaller field can use
+      5 × 10 = 50 with similar coverage; very broad fields may want 15 × 20 = 300.
+    </p>
+
+    <h3 style="margin-top: 1.5rem;">Step 2 — Prompt an external LLM</h3>
+    <p>
+      Paste the edited YAML into a chat with Claude / ChatGPT / Gemini along
+      with a prompt like the one below. Request the output as a single
+      <code>.md</code> file.
+    </p>
+    <pre class="prompt-block">I have a YAML configuration describing a research field, its sub-domains,
+and reviewer personas. Generate a complete reviewer-database markdown file
+from this config.
+
+For each (domain × persona) pair, emit ONE reviewer block in this exact format:
+
+    #### R{NNN} — {Persona name for this domain}
+
+    - **Domain:** {domain.name}
+    - **Persona:** {persona.name}
+    - **Focus:** {1-sentence description of what this reviewer prioritizes,
+                  tailored to this domain}
+    - **Review Style:** {1-sentence description of tone and depth}
+    - **Keywords:** {8-15 comma-separated terms — mostly from domain.keywords,
+                     plus 2-3 persona-specific ones}
+    - **System Prompt:**
+
+    ```text
+    You are a peer reviewer for {field} specializing in {domain.name}.
+    Your persona: {persona.name} — {persona.style}.
+    Your priorities: {persona.priority}.
+
+    You are reviewing a paper draft. Produce a review in strict markdown:
+
+    # Review
+    **Reviewer ID:** R{NNN}
+    **Domain:** {domain.name}
+    **Persona:** {persona.name}
+    **Topic Relevance:** <0-5 float>
+    **Overall Recommendation:** <strong_reject | reject | weak_reject |
+                                 borderline | weak_accept | accept | strong_accept>
+    **Confidence:** <1-5>
+
+    ## Comment {{N}}
+    - **Severity:** <major | moderate | minor>
+    - **Category:** <domain-appropriate category slug>
+    - **Section Reference:** <Section X | Table Y | Figure Z | general>
+    - **Summary:** <one-line summary, ≤15 words, no trailing period>
+    - **Description:** <2-6 sentences of substantive critique>
+    - **Keywords:** <3-7 topic tags, comma-separated>
+
+    Write 3-8 comments covering novelty, methodology, evaluation, and
+    clarity, as relevant to your priorities. If the paper is off-topic for
+    your domain, say so explicitly and keep Topic Relevance low.
+    ```
+
+RULES:
+- Number reviewers sequentially R001, R002, ... across all domain×persona pairs.
+  Iterate domains first, then personas (R001..R020 = domain 1 × all personas).
+- The reviewer count must equal (# domains) × (# personas).
+- Preserve the YAML's keyword lists in the **Keywords** field.
+- Each system prompt MUST include the markdown output specification verbatim
+  — do not abbreviate it. The reviewers need this to produce parseable output.
+- Open with `# {Field title} Reviewer Database`, then a `## 5. Reviewer Entries`
+  heading, then each reviewer block under a `### Domain {id}: {name}` heading.
+  Reviewer blocks are separated by blank lines. No other prose between blocks.
+
+If the YAML includes a `validation_attribution:` mapping, also append a
+section 7 at the end of the file — this is what the validation pipeline
+parses to attribute missed human comments back to the persona that should
+have caught them. Use this exact structure:
+
+    ---
+
+    ## 7. Validation Attribution Tables
+
+    Persona names on the right-hand side must match a `#### R### — <Persona>`
+    heading above.
+
+    ```yaml
+    category_vocab:
+      - {item from YAML's validation_attribution.category_vocab}
+      - ...
+
+    category_to_persona:
+      {key}: {persona name}
+      ...
+
+    sub_rating_to_persona:
+      {key}: {persona name}
+      ...
+    ```
+
+Copy the YAML's `validation_attribution` content verbatim into the fenced
+`yaml` block. Do not invent persona names — use only the persona names from
+the `personas:` list. If `validation_attribution:` is absent from the YAML,
+omit section 7 entirely (the database is review-only).
+
+Here is the YAML config:
+
+{PASTE YAML HERE}</pre>
+
+    <h3 style="margin-top: 1.5rem;">Step 3 — Save and upload</h3>
+    <p>
+      Save the LLM's output as <code>my_field_reviewer_database.md</code>
+      (or any descriptive filename) and upload it using the form above. The
+      server parses it on upload — if any reviewer block is malformed you'll
+      get a clear error; otherwise the database becomes available in the
+      reviewer-database dropdown on the Review page.
+    </p>
+
+    <p class="hint" style="margin-top: 1rem;">
+      <strong>Reference files on disk:</strong>
+    </p>
+    <ul style="margin: 0.5rem 0 0 1.5rem; line-height: 1.8;">
+      <li>YAML template —
+        <code>src/ai_paper_review/data/comparch_reviewer_cfg.yaml</code>
+        (also downloadable above)</li>
+      <li>Runtime markdown example —
+        <code>src/ai_paper_review/data/comparch_reviewer_db.md</code>
+        (200 reviewers, 10 × 20, used as the bundled default)</li>
+      <li>Spec —
+        <a href="{{ url_for('docs_view', slug='database-format') }}">Database Format</a>
+        (field-by-field and block-by-block details)</li>
+    </ul>
+  </section>
+{% endblock %}

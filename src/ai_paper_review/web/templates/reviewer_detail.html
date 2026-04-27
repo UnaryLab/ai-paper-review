@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}{{ r.id }} — {{ r.persona }}{% endblock %}
+{% block content %}
+  <section>
+    <p class="muted"><a href="{{ url_for('databases_view', name=database_id) }}">← Back to AI review database</a></p>
+    <h1>{{ r.id }} — {{ r.persona }}</h1>
+    <p class="lede">{{ r.domain }}</p>
+  </section>
+
+  <section class="card">
+    <table class="rows">
+      <tr><th>ID</th><td><code>{{ r.id }}</code></td></tr>
+      <tr><th>Domain</th><td>{{ r.domain }}</td></tr>
+      <tr><th>Persona</th><td>{{ r.persona }}</td></tr>
+      <tr><th>Focus</th><td>{{ r.focus }}</td></tr>
+      <tr><th>Style</th><td>{{ r.style }}</td></tr>
+      <tr><th>Keywords</th><td>{% for k in r.keywords %}<code>{{ k }}</code> {% endfor %}</td></tr>
+    </table>
+  </section>
+
+  <section class="card">
+    <h2>System prompt</h2>
+    <pre class="prompt">{{ r.system_prompt }}</pre>
+  </section>
+{% endblock %}

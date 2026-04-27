@@ -1,0 +1,115 @@
+# AI Paper Review — LLM configuration
+#
+# Copy this file to `config.yaml` and fill in whichever provider(s) you want.
+# The system needs at minimum `llm_review:` with provider and model set.
+#
+# Config file lookup order:
+#   1. Path in the PAPER_REVIEW_CONFIG env var
+#   2. ./config.yaml (current working directory)
+#   3. config.yaml next to the installed ai_paper_review.llm.config module
+#
+# Canonical provider names use a suffix to show the kind:
+#   *_api → HTTP-based providers that take an API key / PAT
+#   *_sdk → locally-installed SDKs that inherit a CLI's login (no API key)
+#
+# Any api_keys entry missing here falls back to the conventional env var:
+#   anthropic_api -> ANTHROPIC_API_KEY
+#   openai_api    -> OPENAI_API_KEY
+#   google_api    -> GEMINI_API_KEY  (or GOOGLE_API_KEY)
+#   xai_api       -> XAI_API_KEY
+#   github_api    -> GITHUB_TOKEN
+# So you can keep keys in env vars and still pick the provider here.
+
+# -----------------------------------------------------------------------------
+# Review stack — used to run each paper reviewer.
+#
+# REQUIRED. `provider` and `model` must be set (or overridden via the
+# PAPER_REVIEW_REVIEW_PROVIDER_OVERRIDE / PAPER_REVIEW_REVIEW_MODEL_OVERRIDE
+# env vars; the parallel PAPER_REVIEW_VALIDATION_* names override the
+# validation stage).
+# -----------------------------------------------------------------------------
+llm_review:
+  # One of: anthropic_api | openai_api | google_api | xai_api | github_api |
+  #         copilot_sdk | claude_sdk | openai_compatible_api
+  provider: anthropic_api
+  model: claude-sonnet-4-5-20250929
+
+  # Optional base_url for this stage (Azure OpenAI, Ollama, local proxies).
+  # Most managed APIs (Anthropic, OpenAI cloud, Google, xAI, GitHub Models)
+  # need NO base_url — the SDKs have the right endpoint baked in.
+  # base_url: http://localhost:11434/v1    # example: Ollama
+
+  # Rate limiting — defaults are paid-plan-safe (no gap, 2 retries).
+  # For free-tier API keys, set max_concurrent: 1-2 and request_delay: 60.
+  max_concurrent:    10      # max parallel LLM requests
+  request_delay:     0       # seconds between dispatching each reviewer
+  max_retries:       2       # retries on HTTP 429 / rate-limit errors
+  retry_base_delay:  5.0     # base for exponential backoff (actual = base × 2^attempt)
+
+
+# -----------------------------------------------------------------------------
+# Validation stack — used to convert free-form human reviews to AI-review
+# format and to align comments for calibration.
+#
+# OPTIONAL. If this whole block is omitted (or provider/model are missing),
+# validation inherits from llm_review above. You can specify just one of
+# provider/model/base_url to override partially.
+# -----------------------------------------------------------------------------
+# llm_validation:
+#   provider: openai_compatible_api       # e.g. validation on a local model
+#   model:    llama3.1:8b
+#   base_url: http://localhost:11434/v1   # independent from review's base_url
+
+
+# -----------------------------------------------------------------------------
+# API keys — shared between both stages. Fill in only providers you use;
+# others can be blank or absent.
+# -----------------------------------------------------------------------------
+api_keys:
+  anthropic_api:         # sk-ant-...
+  openai_api:            # sk-...
+  google_api:            # AIza...
+  xai_api:               # xai-...
+  github_api:            # ghp_... — GitHub PAT for GitHub Models API
+  openai_compatible_api: # leave blank for Ollama/local servers — no key needed when base_url is set
+
+  # copilot_sdk: no api_keys entry needed — the GitHub Copilot Python SDK
+  # uses Copilot CLI's local authentication. Install with:
+  #   pip install github-copilot-sdk
+  # Then set provider: copilot_sdk in llm_review (and llm_validation if used).
+
+  # claude_sdk: no api_keys entry needed — the Claude Agent Python SDK
+  # uses Claude Code CLI's local login. Install with:
+  #   pip install claude-agent-sdk
+  # Then run `claude /login` once and set provider: claude_sdk in llm_review.
+
+
+# -----------------------------------------------------------------------------
+# Example model identifiers, for reference.
+# -----------------------------------------------------------------------------
+# anthropic_api:          claude-sonnet-4-5-20250929, claude-opus-4-1-20250805, claude-haiku-4-5
+# openai_api:             gpt-4o, gpt-4o-mini, o3, o3-mini, gpt-4.1
+# google_api:             gemini-2.5-pro, gemini-2.5-flash, gemini-2.0-pro
+# xai_api:                grok-4, grok-4-fast, grok-4.20-reasoning, grok-2-latest
+# claude_sdk:             claude-sonnet-4-5-20250929, claude-opus-4-1-20250805, claude-haiku-4-5
+# openai_compatible_api:  depends on the endpoint (e.g., llama3.1:8b on Ollama)
+
+
+# =============================================================================
+# OLLAMA QUICK SETUP
+# =============================================================================
+#
+# 1. Install Ollama: https://ollama.com/download
+# 2. Pull a model:   ollama pull llama3.1:8b
+# 3. Ollama runs at  http://localhost:11434 by default.
+# 4. Use this config:
+#
+# llm_review:
+#   provider: openai_compatible_api
+#   model: llama3.1:8b
+#   base_url: http://localhost:11434/v1
+#
+# No api_keys entry needed — the system detects the base_url and skips the
+# key check. The provider card shows green in the web UI as "local (no key
+# needed)". Other local servers (llama.cpp, vLLM, text-generation-webui)
+# work the same way.

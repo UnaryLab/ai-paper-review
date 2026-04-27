@@ -1,0 +1,169 @@
+{% extends "base.html" %}
+{% block title %}Review in progress — {{ job_id[:8] }}{% endblock %}
+{% block content %}
+  <section class="card" id="status-card">
+    <h1>Reviewing paper</h1>
+    <p class="muted"><code>{{ job_id }}</code></p>
+
+    <div class="status-line">
+      <span class="pill pill-{{ job.status }}" id="status-pill">{{ job.status }}</span>
+      <span id="status-message">{{ job.message }}</span>
+    </div>
+
+    <div class="progress">
+      <div class="progress-bar" id="progress-bar" style="width: 0%"></div>
+    </div>
+    <p class="hint" id="progress-label"></p>
+
+    <table class="rows" style="margin-top: 1.5rem;">
+      <tr><th>File</th><td>{{ job.filename }}</td></tr>
+      <tr><th>LLM</th><td><code>{{ job.provider }}</code>{% if job.model %} / <code>{{ job.model }}</code>{% endif %}</td></tr>
+      <tr>
+        <th>Base URL</th>
+        <td>
+          {% if job.base_url %}
+            <code>{{ job.base_url }}</code>
+          {% else %}
+            <span class="muted">(default)</span>
+          {% endif %}
+        </td>
+      </tr>
+      {% if job.n_reviewers %}<tr><th>Reviewers</th><td>{{ job.n_reviewers }}</td></tr>{% endif %}
+      {% if job.paper_title %}<tr><th>Title</th><td id="title-cell">{{ job.paper_title }}</td></tr>{% endif %}
+      <tr><th>Started</th><td class="muted">{{ job.created_at[:19].replace('T', ' ') }}</td></tr>
+      <tr><th>Last update</th><td class="muted" id="updated-cell">{{ job.updated_at[:19].replace('T', ' ') }}</td></tr>
+    </table>
+
+    <!-- Per-reviewer progress (shown during the reviewing stage) -->
+    <div id="reviewer-progress" style="display:none; margin-top: 1.5rem;">
+      <h3>Reviewers</h3>
+      <div id="reviewer-list"></div>
+    </div>
+
+    <details id="error-details" style="display:none; margin-top: 1rem;">
+      <summary>Error trace</summary>
+      <pre id="error-trace"></pre>
+    </details>
+  </section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  const jobId = "{{ job_id }}";
+  const pollUrl = "{{ url_for('review_poll', job_id=job_id) }}";
+  const resultUrl = "{{ url_for('review_result', job_id=job_id) }}";
+
+  // Stage → base progress% before reviewer detail kicks in.
+  const STAGE_BASE = {
+    queued:     5,
+    ingesting:  15,
+    selecting:  25,
+    reviewing:  25,   // 25–90% filled by per-reviewer progress
+    clustering: 92,
+    done:      100,
+    error:      0,
+  };
+
+  function computeProgress(j) {
+    if (j.status !== "reviewing" || !j.review_progress) {
+      return STAGE_BASE[j.status] || 0;
+    }
+    // During reviewing: 25% base + (completed/total) * 65%
+    const rp = j.review_progress;
+    const completed = rp.current || 0;
+    return 25 + Math.round((completed / rp.total) * 65);
+  }
+
+  function renderReviewerList(completed, dispatched, reviewProgress) {
+    const list = document.getElementById("reviewer-list");
+    const section = document.getElementById("reviewer-progress");
+    if (!completed && !dispatched && !reviewProgress) return;
+    section.style.display = "block";
+
+    const completedIds = new Set((completed || []).map(r => r.reviewer_id));
+    let html = "";
+
+    // Completed reviewers — checkmark
+    if (completed && completed.length > 0) {
+      for (const r of completed) {
+        html += `<div class="reviewer-row reviewer-done">
+          <span class="reviewer-icon">✓</span>
+          <span class="reviewer-label"><code>${r.reviewer_id}</code> ${r.persona}</span>
+          <span class="reviewer-comments">${r.n_comments} comments</span>
+        </div>`;
+      }
+    }
+
+    // In-flight reviewers (dispatched but not yet completed) — spinner
+    if (dispatched && dispatched.length > 0) {
+      for (const r of dispatched) {
+        if (!completedIds.has(r.reviewer_id)) {
+          html += `<div class="reviewer-row reviewer-active">
+            <span class="reviewer-icon spinner">⟳</span>
+            <span class="reviewer-label"><code>${r.reviewer_id}</code> ${r.persona}</span>
+            <span class="reviewer-comments">running…</span>
+          </div>`;
+        }
+      }
+    }
+
+    // Remaining count (not yet dispatched)
+    const nDispatched = dispatched ? dispatched.length : 0;
+    const total = reviewProgress ? reviewProgress.total : 10;
+    const remaining = total - nDispatched;
+    if (remaining > 0) {
+      html += `<div class="reviewer-row reviewer-pending">
+        <span class="reviewer-icon">○</span>
+        <span class="reviewer-label">${remaining} reviewer${remaining > 1 ? 's' : ''} waiting</span>
+      </div>`;
+    }
+
+    list.innerHTML = html;
+  }
+
+  async function poll() {
+    try {
+      const r = await fetch(pollUrl, {cache: "no-store"});
+      if (!r.ok) return;
+      const j = await r.json();
+
+      document.getElementById("status-pill").textContent = j.status;
+      document.getElementById("status-pill").className = "pill pill-" + j.status;
+      document.getElementById("status-message").textContent = j.message || "";
+
+      const pct = computeProgress(j);
+      document.getElementById("progress-bar").style.width = pct + "%";
+      document.getElementById("progress-label").textContent =
+        j.status === "reviewing" && j.review_progress
+          ? `${j.review_progress.current} / ${j.review_progress.total} reviewers`
+          : "";
+
+      if (j.updated_at) {
+        document.getElementById("updated-cell").textContent =
+          j.updated_at.slice(0,19).replace("T"," ");
+      }
+      if (j.paper_title) {
+        const cell = document.getElementById("title-cell");
+        if (cell) cell.textContent = j.paper_title;
+      }
+
+      // Per-reviewer progress list
+      renderReviewerList(j.completed_reviewers, j.dispatched_reviewers, j.review_progress);
+
+      if (j.status === "done") {
+        window.location.href = resultUrl;
+      } else if (j.status === "error") {
+        document.getElementById("error-details").style.display = "block";
+        document.getElementById("error-trace").textContent =
+          j.traceback || j.message || "";
+      } else {
+        setTimeout(poll, 2000);
+      }
+    } catch (e) {
+      setTimeout(poll, 5000);
+    }
+  }
+
+  poll();
+</script>
+{% endblock %}

@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}{{ title }} — Docs{% endblock %}
+{% block content %}
+  <section>
+    <p class="muted">
+      <a href="{{ url_for('docs_index') }}">← All docs</a>
+      · <span class="muted" style="font-size: 0.85rem;">source: <code>{{ source_path }}</code></span>
+    </p>
+  </section>
+
+  <div class="docs-layout">
+    <aside class="docs-sidebar">
+      <h3>Documents</h3>
+      <ul class="docs-nav">
+        {% for d in docs %}
+          <li class="{% if d.slug == current_slug %}active{% endif %}">
+            <a href="{{ url_for('docs_view', slug=d.slug) }}">{{ d.title }}</a>
+          </li>
+        {% endfor %}
+      </ul>
+    </aside>
+    <article class="docs-article">
+      {{ content_html | safe }}
+    </article>
+  </div>
+{% endblock %}

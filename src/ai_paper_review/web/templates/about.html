@@ -1,0 +1,171 @@
+{% extends "base.html" %}
+{% block title %}Overview — AI Paper Review{% endblock %}
+{% block content %}
+  <section>
+    <h1>Overview</h1>
+    <p class="lede">
+      Get multiple expert perspectives on your draft research paper in a
+      few minutes. Upload a PDF, pick how many reviewers from a pool of
+      AI personas should examine it, each selected reviewer produces
+      structured review comments in parallel, and the results are
+      clustered and ranked so the issues multiple reviewers raise float
+      to the top.
+    </p>
+  </section>
+
+  <section class="card">
+    <h2>Goal</h2>
+    <p>
+      This system is a <strong>draft-polishing aid for papers you are
+      writing</strong>. It is designed to help authors spot weaknesses in
+      their own in-progress work before they submit (e.g., missing baselines,
+      thin ablations, unclear contributions, reproducibility gaps, and writing
+      issues), and the kinds of questions reviewers are likely to ask.
+    </p>
+    <p>
+      The system ships with a default reviewer database for
+      <strong>computer architecture</strong> (200 reviewers: 10 sub-domains
+      × 20 personas). The reviewer database is a swappable input — you can
+      build one for any research field externally and upload it through the
+      <a href="{{ url_for('databases_list') }}">Database</a> page.
+    </p>
+  </section>
+
+  <section class="card">
+    <h2>⚠️ Disclaimers — please read</h2>
+
+    <div class="warn" role="alert" style="margin-top: 1rem;">
+      <strong>Intended use.</strong>
+      This tool is a <strong>draft-polishing aid for papers you are
+      writing</strong>. It is <strong>not a peer-review generator</strong>.
+      Most venues have strict policies against using LLMs in assigned
+      reviews, due to concerns about bias, hallucination, and the potential
+      for compromising the integrity of the peer-review process. Please use
+      it at your own discretion, and indicate when you have used it.
+    </div>
+
+    <div class="warn" role="alert" style="margin-top: 1rem;">
+      <strong>Scope.</strong> The system takes in the PDF
+      directly. Depending on the LLM provider, it either analyzes the
+      <strong>full PDF</strong> directly or focuses on the
+      <strong>text and tables</strong> only (extracted by pypdf and
+      MarkItDown). Expect the reviews to focus on methodology description,
+      claims, experimental design, evaluation setup, and writing quality.
+    </div>
+
+    <div class="warn" role="alert" style="margin-top: 1rem;">
+      <strong>Quality.</strong> Every comment this system produces is a
+      <strong>suggestion to evaluate, not a finding to accept</strong>.
+      AI reviewers hallucinate, miss context, and over-confidently flag
+      non-issues. Expect to reject roughly half of what you see. Alignment
+      verdicts in the validation flow are heuristic: LLMs can match
+      surface wording while missing intent, and miss real matches that are
+      phrased differently. <strong>Treat all output as a signal, not ground
+      truth, and use it at your own discretion.</strong>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>How it works — four steps</h2>
+    <p>
+      Each step corresponds to a page in the navigation bar above. Start
+      with Model to confirm your LLM provider is set up, then run Review
+      on a draft. Once you have real human reviews back, use Validation
+      to see how well the AI matched. After several validations
+      accumulate, use Aggregation to surface the tuning suggestions that
+      repeat across papers.
+    </p>
+
+    <div class="workflow-steps">
+      <div class="workflow-step">
+        <div class="workflow-num">1</div>
+        <div class="workflow-body">
+          <h3><a href="{{ url_for('model_settings') }}">Model</a></h3>
+          <p class="muted" style="margin: 0.2rem 0 0.6rem 0;">Defaults from <code>config.yaml</code>; adjustable per session</p>
+          <p>
+            Pick which LLM provider and model run reviews, and (optionally)
+            a different one for validation. Supported providers include
+            Anthropic, OpenAI, Google Gemini, xAI, GitHub Models,
+            GitHub Copilot SDK, and any OpenAI-compatible endpoint (Ollama,
+            Together, Groq, DeepSeek, local llama.cpp, …). The page shows
+            which providers have credentials configured, and you can change
+            provider / model / base URL via the form — changes apply for
+            the current session and are cleared on server restart. For
+            permanent changes, edit <code>config.yaml</code> directly.
+          </p>
+          <p><strong>Output:</strong> review and validation models.</p>
+        </div>
+      </div>
+
+      <div class="workflow-arrow">↓</div>
+
+      <div class="workflow-step">
+        <div class="workflow-num">2</div>
+        <div class="workflow-body">
+          <h3><a href="{{ url_for('review_launcher') }}">Review</a></h3>
+          <p class="muted" style="margin: 0.2rem 0 0.6rem 0;">Upload a PDF and get a ranked review report</p>
+          <p>
+            Upload your draft PDF, pick a reviewer database, and choose
+            how many reviewers to run. The system extracts text + keywords
+            from the paper, picks the top-N reviewer personas most
+            relevant to your topic (diversified across personas), runs
+            them in parallel against the configured LLM — each reviewer
+            emitting structured comments — then clusters similar comments
+            and ranks them by <em>commonality × severity</em>.
+            A separate always-on writing-clarity reviewer
+            also runs on every paper. It focuses
+            strictly on writing quality (flow, terminology, figures,
+            structure). It is not clustered
+            with the domain reviewers and never enters Validation —
+            writing feedback is for your polishing, not for persona
+            calibration.
+          </p>
+          <p><strong>Output:</strong> per-reviewer comments, ranked comments, and writing-clarity comments.</p>
+        </div>
+      </div>
+
+      <div class="workflow-arrow">↓</div>
+
+      <div class="workflow-step">
+        <div class="workflow-num">3</div>
+        <div class="workflow-body">
+          <h3><a href="{{ url_for('validate_form') }}">Validation</a> <span class="muted" style="font-weight: normal; font-size: 0.9rem;">(optional)</span></h3>
+          <p class="muted" style="margin: 0.2rem 0 0.6rem 0;">Compare the AI review against real human review</p>
+          <p>
+            Once you receive real human peer reviews, upload them alongside
+            the AI review to see a calibration report: which persona
+            prompts the AI is getting right, where it misses human-raised
+            issues, and where it false-alarms. The validator converts the
+            human review into the same structured format the AI pipeline
+            uses, then asks the LLM for a similarity score between every
+            (human comment, AI comment) pair in a single batch call, and
+            derives hit / partial / miss verdicts from the resulting
+            matrix. Use the report to hand-tune the reviewer database
+            over multiple papers.
+          </p>
+          <p><strong>Outputs:</strong> validation report and calibration delta</p>
+        </div>
+      </div>
+
+      <div class="workflow-arrow">↓</div>
+
+      <div class="workflow-step">
+        <div class="workflow-num">4</div>
+        <div class="workflow-body">
+          <h3><a href="{{ url_for('aggregate_view') }}">Aggregation</a> <span class="muted" style="font-weight: normal; font-size: 0.9rem;">(optional)</span></h3>
+          <p class="muted" style="margin: 0.2rem 0 0.6rem 0;">Cross-paper aggregation of calibration deltas to help adjust reviewer personas</p>
+          <p>
+            After running Validation on several papers, a single paper's
+            calibration delta is noisy — one human reviewer's
+            idiosyncrasies can make any persona look miscalibrated.
+            Aggregation groups suggestions across all completed
+            validations and only surfaces those that
+            repeat across papers. What's left is robust advice on which
+            reviewer-database knobs to turn.
+          </p>
+          <p><strong>Output:</strong> cross-paper aggregation report.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+{% endblock %}

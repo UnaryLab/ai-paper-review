@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block title %}Documentation{% endblock %}
+{% block content %}
+  <section>
+    <h1>Documentation</h1>
+    <p class="lede">
+      Project documentation, rendered from the source tree's
+      <code>README.md</code> and <code>docs/</code> directory.
+    </p>
+  </section>
+
+  {% if not source_available %}
+    <section class="card">
+      <p class="warn-text">
+        Source-tree documentation isn't available. This happens when the server
+        runs from an installed wheel rather than a checkout. Install the package
+        in editable mode (<code>pip install -e .</code>) from the repo root,
+        restart the server, and this page will find <code>README.md</code> and
+        <code>docs/*.md</code>.
+      </p>
+    </section>
+  {% else %}
+    <section class="card">
+      <table class="rows">
+        <thead><tr><th>Document</th><th>What's inside</th></tr></thead>
+        <tbody>
+          {% for d in docs %}
+            <tr>
+              <td><a href="{{ url_for('docs_view', slug=d.slug) }}"><strong>{{ d.title }}</strong></a></td>
+              <td class="muted">{{ d.teaser }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </section>
+  {% endif %}
+{% endblock %}

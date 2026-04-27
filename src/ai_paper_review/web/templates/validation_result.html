@@ -1,0 +1,266 @@
+{% extends "base.html" %}
+{% block title %}Validation result{% endblock %}
+{% block content %}
+  <section>
+    <p class="muted"><a href="{{ url_for('validate_form') }}">← Back to validation</a></p>
+    <h1>Validation report</h1>
+    <p class="lede">Comparing {{ alignment.n_actual }} human comment{{ 's' if alignment.n_actual != 1 }} against {{ alignment.n_ai }} AI comment{{ 's' if alignment.n_ai != 1 }}.</p>
+    <div class="download-row">
+      <a class="button" href="{{ url_for('validate_download', run_dir=run_dir_name, fname='validation_report.md') }}">Download report (.md)</a>
+      <a class="button" href="{{ url_for('validate_download', run_dir=run_dir_name, fname='calibration_delta.json') }}">Download calibration delta (.json)</a>
+    </div>
+    {% if llm_provider and llm_model %}
+      <p class="muted" style="margin-top: 0.8rem; font-size: 0.9rem;">
+        <strong>LLM:</strong> <code>{{ llm_provider }}</code> / <code>{{ llm_model }}</code>
+        &nbsp;·&nbsp; <strong>Base URL:</strong> <code>{{ llm_base_url }}</code>
+        {% if launched_at %}
+          &nbsp;·&nbsp; <strong>Launched:</strong> {{ launched_at }}
+        {% endif %}
+        {% if ended_at %}
+          &nbsp;·&nbsp; <strong>Ended:</strong> {{ ended_at }}
+        {% endif %}
+      </p>
+    {% endif %}
+    <details class="intermediate-files">
+      <summary><strong>Intermediate artifacts</strong> — for debugging why pairs got the verdicts they did</summary>
+      <p class="muted small">These files are written to the run directory on every validation. They're intermediate steps — feel free to ignore unless something looks wrong.</p>
+      <ul class="download-list">
+        <li><a href="{{ url_for('validate_download', run_dir=run_dir_name, fname='actual_raw_llm.md') }}">actual_raw_llm.md</a> — verbatim LLM output from the human-review conversion step, before parsing</li>
+        <li><a href="{{ url_for('validate_download', run_dir=run_dir_name, fname='actual_converted.md') }}">actual_converted.md</a> — the parsed and normalized human review in AI-review markdown format</li>
+        <li><a href="{{ url_for('validate_download', run_dir=run_dir_name, fname='alignment_llm_analysis.md') }}">alignment_llm_analysis.md</a> — verbatim LLM response from the single batch-similarity call (the raw analysis)</li>
+        <li><a href="{{ url_for('validate_download', run_dir=run_dir_name, fname='alignment_similarities.md') }}">alignment_similarities.md</a> — N × M similarity matrix parsed from the LLM response, with per-row verdict</li>
+        <li><a href="{{ url_for('validate_download', run_dir=run_dir_name, fname='alignment_ranking.md') }}">alignment_ranking.md</a> — human comments sorted by best-match similarity, highest first</li>
+      </ul>
+    </details>
+  </section>
+
+  {% if run_files %}
+    {# One macro for the three run-files tables so column changes land in one place. #}
+    {% macro run_files_table(files) -%}
+      <table class="rows run-files">
+        <colgroup>
+          <col class="col-file">
+          <col class="col-size">
+          <col class="col-description">
+        </colgroup>
+        <thead><tr><th>File</th><th>Size</th><th>Description</th></tr></thead>
+        <tbody>
+          {% for f in files %}
+            <tr>
+              <td><code>{{ f.abs_path }}</code></td>
+              <td class="muted" style="white-space: nowrap;">{{ f.size }}</td>
+              <td>{{ f.description }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {%- endmacro %}
+
+    <section class="card">
+      <h2>Source files on disk</h2>
+      <p class="muted" style="font-size: 0.9rem;">
+        Everything produced by this validation lives in a single directory.
+        Paths below are absolute so you can copy-paste straight into a shell.
+      </p>
+      <p><strong>Run directory:</strong> <code>{{ run_files.run_dir }}</code></p>
+
+      {% if run_files.inputs %}
+        <h3 style="margin-top: 1rem;">Inputs</h3>
+        {{ run_files_table(run_files.inputs) }}
+      {% endif %}
+
+      {% if run_files.outputs %}
+        <h3 style="margin-top: 1rem;">Outputs</h3>
+        {{ run_files_table(run_files.outputs) }}
+      {% endif %}
+
+      {% if run_files.internal %}
+        <details style="margin-top: 1rem;">
+          <summary class="muted">Internal artifacts ({{ run_files.internal|length }})</summary>
+          <div style="margin-top: 0.5rem;">
+            {{ run_files_table(run_files.internal) }}
+          </div>
+        </details>
+      {% endif %}
+    </section>
+  {% endif %}
+
+  <section class="metric-grid">
+    <div class="metric">
+      <strong>{{ metrics.recall }}</strong>
+      <span>Recall</span>
+      <small>fraction of human comments the AI caught</small>
+    </div>
+    <div class="metric">
+      <strong>{{ metrics.precision }}</strong>
+      <span>Precision</span>
+      <small>fraction of AI comments humans also raised</small>
+    </div>
+    <div class="metric">
+      <strong>{{ metrics.f1 }}</strong>
+      <span>F1</span>
+      <small>harmonic mean of precision and recall</small>
+    </div>
+    <div class="metric">
+      <strong>{{ metrics.severity_weighted_recall }}</strong>
+      <span>Weighted recall</span>
+      <small>major misses penalized more</small>
+    </div>
+    <div class="metric">
+      <strong>{{ metrics.n_hits }}</strong>
+      <span>Hits</span>
+    </div>
+    <div class="metric">
+      <strong>{{ metrics.n_misses }}</strong>
+      <span>Misses</span>
+    </div>
+    <div class="metric">
+      <strong>{{ metrics.n_false_alarms }}</strong>
+      <span>False alarms</span>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Per-persona performance</h2>
+    <table class="rows">
+      <thead><tr>
+        <th>Reviewer ID</th><th>Persona</th><th>Emitted</th><th>Caught</th>
+        <th>False alarms</th><th>Noise ratio</th>
+      </tr></thead>
+      <tbody>
+        {% for ps in calibration.persona_stats %}
+          <tr>
+            <td><code>{{ ps.reviewer_id or '—' }}</code></td>
+            <td>{{ ps.persona }}</td>
+            <td>{{ ps.comments_emitted }}</td>
+            <td>{{ ps.actual_comments_helped_catch }}</td>
+            <td>{{ ps.false_alarms }}</td>
+            <td>{{ ps.noise_ratio if ps.noise_ratio is not none else '—' }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+
+  {% if calibration.sub_rating_attributions %}
+    <section class="card">
+      <h2>Sub-rating attributions</h2>
+      <table class="rows">
+        <thead><tr><th>Reviewer</th><th>Sub-rating</th><th>Value</th><th>Expected persona</th><th>Verdict</th></tr></thead>
+        <tbody>
+          {% for a in calibration.sub_rating_attributions %}
+            <tr>
+              <td>{{ a.reviewer_label }}</td>
+              <td>{{ a.sub_rating }}</td>
+              <td>{{ a.value }}/{{ a.scale }}</td>
+              <td>{{ a.expected_persona or '—' }}</td>
+              <td><span class="pill">{{ a.failure_mode.replace('_', ' ') }}</span></td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </section>
+  {% endif %}
+
+  <section>
+    <h2>Hits, misses, and false alarms</h2>
+
+    <details open>
+      <summary><strong>Hits</strong> ({{ alignment.hits|length }}) — human comments the AI caught</summary>
+      {# Render one AI comment (primary or supporting) inside a hit's
+         drill-down. Kept as a local macro so primary and supporting
+         blocks stay visually identical. #}
+      {% macro ai_match_card(ai, sim) -%}
+        <div class="ai-match issue-{{ ai.severity or 'minor' }}">
+          <header>
+            <code>{{ ai.reviewer_id or '—' }}</code>
+            {% if ai.persona %} / {{ ai.persona }}{% endif %}
+            {% if ai.comment_id %}
+              &nbsp;<span class="muted" style="font-size: 0.85rem;">({{ ai.comment_id }})</span>
+            {% endif %}
+            {% if ai.severity %}
+              &nbsp;<span class="sev sev-{{ ai.severity }}">{{ ai.severity|upper }}</span>
+            {% endif %}
+            &nbsp;<span class="muted" style="font-size: 0.85rem;">sim {{ "%.2f"|format(sim) }}</span>
+          </header>
+          {% if ai.summary %}<p style="margin: 0.4rem 0 0.2rem 0;"><strong>{{ ai.summary }}</strong></p>{% endif %}
+          {% if ai.description %}<p class="muted" style="margin: 0.2rem 0 0 0; font-size: 0.92rem;">{{ ai.description }}</p>{% endif %}
+        </div>
+      {%- endmacro %}
+
+      {% for h in alignment.hits %}
+        <div class="issue issue-{{ h.actual.severity }}">
+          <header>
+            <span class="sev sev-{{ h.actual.severity }}">{{ h.actual.severity|upper }}</span>
+            <strong>{{ h.actual.text[:140] }}{% if h.actual.text|length > 140 %}…{% endif %}</strong>
+          </header>
+          <details style="margin-top: 0.4rem;">
+            <summary class="hint">
+              Matched by <code>{{ h.primary_ai.reviewer_id }}</code> / {{ h.primary_ai.persona }}
+              (sim {{ "%.2f"|format(h.primary_sim) }})
+              {% if h.supporting_ai %} &nbsp;·&nbsp; plus {{ h.supporting_ai|length }} more{% endif %}
+              &nbsp;<span class="muted" style="font-size: 0.8rem;">— click to see AI comment text</span>
+            </summary>
+            <div style="margin-top: 0.6rem;">
+              <p class="muted" style="margin: 0 0 0.3rem 0; font-size: 0.85rem;"><strong>Primary match:</strong></p>
+              {{ ai_match_card(h.primary_ai, h.primary_sim) }}
+              {% if h.supporting_ai %}
+                <p class="muted" style="margin: 0.8rem 0 0.3rem 0; font-size: 0.85rem;">
+                  <strong>Also matched by {{ h.supporting_ai|length }} additional AI comment{{ 's' if h.supporting_ai|length != 1 }}:</strong>
+                </p>
+                {% for sup in h.supporting_ai %}
+                  {{ ai_match_card(sup.ai, sup.sim) }}
+                {% endfor %}
+              {% endif %}
+            </div>
+          </details>
+        </div>
+      {% endfor %}
+    </details>
+
+    <details>
+      <summary><strong>Misses</strong> ({{ alignment.misses|length }}) — human comments the AI failed to raise</summary>
+      {% for m in alignment.misses %}
+        <div class="issue issue-{{ m.severity }}">
+          <header><span class="sev sev-{{ m.severity }}">{{ m.severity|upper }}</span> <strong>{{ m.text[:200] }}…</strong></header>
+          <p class="hint">Category: <code>{{ m.category or 'uncategorized' }}</code> · best AI similarity {{ "%.2f"|format(m.best_sim) }}</p>
+        </div>
+      {% endfor %}
+    </details>
+
+    <details>
+      <summary><strong>False alarms</strong> ({{ alignment.false_alarms|length }}) — AI comments no human raised</summary>
+      {% for fa in alignment.false_alarms %}
+        <div class="issue issue-minor">
+          <header>
+            <code>{{ fa.reviewer_id }}</code> / {{ fa.persona }}
+            <strong>{{ fa.summary }}</strong>
+          </header>
+        </div>
+      {% endfor %}
+    </details>
+  </section>
+
+  {% if calibration.suggestions %}
+    <section class="card">
+      <h2>Calibration suggestions</h2>
+      {% for s in calibration.suggestions %}
+        <div class="suggestion suggestion-{{ s.type }}">
+          <header>
+            <span class="pill">{{ s.type }}</span>
+            <strong>{{ s.target_persona or s.category or s.missing_personas_in_selection|join(', ') if s.missing_personas_in_selection else '' }}</strong>
+          </header>
+          <p>{{ s.rationale }}</p>
+          {% if s.prompt_patch_hint %}<p class="hint">Hint: {{ s.prompt_patch_hint }}</p>{% endif %}
+          {% if s.fix_hint %}<p class="hint">Fix: {{ s.fix_hint }}</p>{% endif %}
+          {% if s.example_misses %}
+            <details>
+              <summary>Example misses ({{ s.example_misses|length }})</summary>
+              <ul>{% for m in s.example_misses %}<li>{{ m }}</li>{% endfor %}</ul>
+            </details>
+          {% endif %}
+        </div>
+      {% endfor %}
+    </section>
+  {% endif %}
+{% endblock %}

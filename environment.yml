@@ -1,0 +1,29 @@
+name: ai-paper-review
+channels:
+  - conda-forge
+dependencies:
+  # --- Conda-managed: interpreter + native binary tool --------------------
+  # Python 3.11 or newer. Conda resolves this to the latest matching
+  # version available in conda-forge at env-create time. Everything in
+  # this project works on 3.11, 3.12, and 3.13 — pin lower or floor
+  # this explicitly in your own environment if you need reproducibility.
+  - python>=3.11
+  - pip
+
+  # GitHub CLI. One of several ways the Copilot Python SDK finds
+  # credentials (env vars → stored copilot login → gh CLI). Users who
+  # already run `gh auth login` get Copilot auth for free.
+  #
+  # Using the explicit `conda-forge::gh` form so it resolves correctly
+  # even when users have strict channel priority or additional channels
+  # configured globally.
+  - conda-forge::gh
+
+  # --- Python package deps come from pyproject.toml -----------------------
+  # Single source of truth; this avoids drift between here and
+  # pyproject.toml. Installing with -e means edits to src/ take effect
+  # without reinstalling. Every LLM SDK (including the Copilot provider's
+  # SDK and MarkItDown) ships in the default install — no extras to
+  # remember.
+  - pip:
+      - -e .

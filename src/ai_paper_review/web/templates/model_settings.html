@@ -1,0 +1,171 @@
+{% extends "base.html" %}
+{% block title %}AI review model{% endblock %}
+{% block content %}
+  <section>
+    <h1>AI review model</h1>
+    <p class="lede">
+      Pick which LLM runs paper review and which runs validation. 
+      Config is initialized at <code>{{ config_path }}</code>
+      {% if not cfg or not cfg.config_path %} <em>(not found — create one from <code>config.example.yaml</code>)</em>{% endif %}
+      {% if overrides_active %}
+        <br><span class="pill pill-info">session overrides active</span>
+        <em>The values below differ from <code>config.yaml</code>. Use <strong>Reset to config.yaml</strong> below to clear them.</em>
+      {% endif %}
+    </p>
+  </section>
+
+  {% if not providers %}
+    <section class="card">
+      <p class="warn-text">
+        Couldn't probe provider availability. Check that <code>config.yaml</code>
+        exists and parses; see the log output where the server is running for details.
+      </p>
+    </section>
+  {% else %}
+    <section class="card">
+      <h2>Provider availability</h2>
+      <div class="provider-grid">
+        {% for p in providers %}
+          <div class="provider-card {{ 'provider-available' if p.configured else 'provider-unavailable' }}"
+               title="{{ ('Credential source: ' + p.key_source) if p.configured else p.unavailable_reason }}">
+            <span class="provider-head">
+              <span class="provider-dot dot-{{ 'green' if p.configured else 'red' }}"></span>
+              <span class="provider-name">{{ p.label }}</span>
+            </span>
+            <span class="provider-meta">
+              {% if p.configured %}
+                <span class="badge badge-ok">
+                  {% if p.auth_kind == 'sdk_install' %}SDK ready
+                  {% elif p.auth_kind == 'local_server' %}local server
+                  {% else %}key configured{% endif %}
+                </span>
+                <span class="muted">· {{ p.key_source }}</span>
+              {% else %}
+                <span class="badge badge-err">
+                  {% if p.auth_kind == 'sdk_install' %}SDK missing
+                  {% elif p.auth_kind == 'local_server' %}no endpoint
+                  {% else %}no key{% endif %}
+                </span>
+                <span class="muted">· {{ p.unavailable_reason }}</span>
+              {% endif %}
+              {% if p.base_url %}
+                <span class="muted">· <code class="base-url-text">{{ p.base_url }}</code></span>
+              {% endif %}
+            </span>
+          </div>
+        {% endfor %}
+      </div>
+    </section>
+  {% endif %}
+
+  <form method="post" action="{{ url_for('model_settings_apply') }}">
+    <section class="card">
+      <h2>1. Review model</h2>
+      <p class="hint">
+        Each selected reviewer calls this
+        LLM in parallel. <strong>Required.</strong>
+      </p>
+
+      <label for="review_provider" style="display:block; margin-top: 1rem;">
+        <strong>Review provider</strong>
+      </label>
+      <select name="review_provider" id="review_provider" required style="min-width: 20rem;">
+        {% for p in providers %}
+          <option value="{{ p.name }}"
+                  {% if cfg and cfg.review_provider == p.name %}selected{% endif %}>
+            {{ p.label }}{% if p.configured %} ✓{% else %} (no key){% endif %}
+          </option>
+        {% endfor %}
+      </select>
+
+      <label for="review_model" style="display:block; margin-top: 1rem;">
+        <strong>Review model</strong>
+      </label>
+      <input type="text" name="review_model" id="review_model" required
+             value="{{ cfg.review_model if cfg else '' }}"
+             placeholder="e.g. claude-sonnet-4-5-20250929"
+             style="min-width: 24rem;">
+
+      <label for="review_base_url" style="display:block; margin-top: 1rem;">
+        <strong>Review base URL</strong> <span class="muted">(optional)</span>
+      </label>
+      <input type="text" name="review_base_url" id="review_base_url"
+             value="{{ (cfg.review_base_url or '') if cfg else '' }}"
+             placeholder="e.g. http://localhost:11434/v1"
+             style="min-width: 24rem;">
+      <p class="hint">
+        Only needed for Azure OpenAI, local servers (Ollama / llama.cpp / vLLM),
+        or custom OpenAI-compatible proxies. Leave blank for managed APIs/SDKs
+        (Anthropic, OpenAI cloud, Google, xAI, GitHub Models, Copilot SDK).
+      </p>
+
+      <h2 style="margin-top: 1rem;">2. Validation model</h2>
+      <p class="hint">
+        Used when converting free-form human reviews to AI-review format and
+        when aligning comments. All
+        fields are <strong>optional</strong>: blank means validation
+        inherits from the review model above. Useful when you want to run
+        paper reviews on a premium model and validation on a cheaper or
+        local one.
+      </p>
+
+      {% if resolved_validation %}
+        <p class="hint" style="margin-top: 0.5rem;">
+          <strong>Currently resolves to:</strong>
+          <code>{{ resolved_validation.provider }}</code> /
+          <code>{{ resolved_validation.model }}</code>
+          {% if resolved_validation.base_url %}
+            · base URL <code>{{ resolved_validation.base_url }}</code>
+          {% else %}
+            · <span class="muted">default base URL</span>
+          {% endif %}
+          {% if resolved_validation.inherits %}
+            <span class="pill pill-info">inherits from review</span>
+          {% endif %}
+        </p>
+      {% endif %}
+
+      <label for="validation_provider" style="display:block; margin-top: 1rem;">
+        <strong>Validation provider</strong> <span class="muted">(optional)</span>
+      </label>
+      <select name="validation_provider" id="validation_provider" style="min-width: 20rem;">
+        <option value="" {% if not (cfg and cfg.validation_provider) %}selected{% endif %}>— inherit from review provider —</option>
+        {% for p in providers %}
+          <option value="{{ p.name }}"
+                  {% if cfg and cfg.validation_provider == p.name %}selected{% endif %}>
+            {{ p.label }}{% if p.configured %} ✓{% else %} (no key){% endif %}
+          </option>
+        {% endfor %}
+      </select>
+
+      <label for="validation_model" style="display:block; margin-top: 1rem;">
+        <strong>Validation model</strong> <span class="muted">(optional)</span>
+      </label>
+      <input type="text" name="validation_model" id="validation_model"
+             value="{{ (cfg.validation_model or '') if cfg else '' }}"
+             placeholder="Leave blank to inherit from the review model"
+             style="min-width: 24rem;">
+
+      <label for="validation_base_url" style="display:block; margin-top: 1rem;">
+        <strong>Validation base URL</strong> <span class="muted">(optional)</span>
+      </label>
+      <input type="text" name="validation_base_url" id="validation_base_url"
+             value="{{ (cfg.validation_base_url or '') if cfg else '' }}"
+             placeholder="Leave blank to inherit from the review model (when same provider)"
+             style="min-width: 24rem;">
+
+      <div style="margin-top: 2rem; display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap;">
+        <button type="submit" name="action" value="apply" class="primary">Apply for this session</button>
+        <button type="submit" name="action" value="reset" class="button"
+                onclick="return confirm('Clear all session overrides and fall back to config.yaml values?');">
+          Reset to config.yaml
+        </button>
+        <p class="hint" style="margin: 0;">
+          Applies immediately to subsequent reviews and validations.
+          <strong>Not persisted</strong> — server restart reverts to
+          <code>config.yaml</code>.
+        </p>
+      </div>
+    </section>
+  </form>
+{% endblock %}

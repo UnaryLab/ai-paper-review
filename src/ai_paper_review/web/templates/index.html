@@ -1,0 +1,190 @@
+{% extends "base.html" %}
+{% block title %}AI review{% endblock %}
+{% block content %}
+  <section>
+    <h1>AI review</h1>
+    <p class="lede">
+      Upload a draft PDF. The top-N AI reviewers most relevant to your topic
+      are selected from the active database, each produces structured
+      critique, and the results are clustered and ranked by commonality ×
+      importance.
+    </p>
+
+    {% if not any_provider_configured %}
+      <div class="warn">
+        <strong>No LLM API is configured.</strong>
+        Head to the <a href="{{ url_for('model_settings') }}">Model page</a>
+        to pick a provider and set its key, or edit <code>config.yaml</code>
+        directly — then come back here.
+      </div>
+    {% endif %}
+  </section>
+
+  <section class="card">
+    <form method="post" action="{{ url_for('start_review') }}" enctype="multipart/form-data">
+      {% if llm_status %}
+        <p class="hint">
+          Currently using <code>{{ llm_status.review_provider }}</code> /
+          <code>{{ llm_status.review_model }}</code>.
+          Change on the <a href="{{ url_for('model_settings') }}">Model page</a>.
+        </p>
+      {% endif %}
+
+      <h2>1. Choose a reviewer database</h2>
+      <p class="hint">
+        Each database is a pool of reviewer personas tailored to a specific field.
+        To build a new database, see
+        <a href="{{ url_for('databases_list') }}">Database</a>.
+      </p>
+      <select name="database" id="database-select" style="min-width: 28rem;">
+        {% for db in available_databases %}
+          <option value="{{ db.id }}"
+                  data-n-reviewers="{{ db.n_reviewers }}"
+                  {% if db.is_default %}selected{% endif %}>
+            {{ db.label }} — {{ db.n_reviewers }} reviewers
+          </option>
+        {% endfor %}
+      </select>
+
+      <h2 style="margin-top: 1.2rem;">2. Number of reviewers</h2>
+      <p class="hint">
+        How many reviewer personas from the database should review this paper.
+        Each selected reviewer runs in parallel via one LLM call and produces
+        5–10 review comments. Recommended:
+        {{ recommended_min_n_reviewers }}–{{ recommended_max_n_reviewers }}
+        — this balances coverage and cost. Below {{ recommended_min_n_reviewers }}
+        loses the cross-reviewer consensus signal that the downstream clustering
+        relies on; above {{ recommended_max_n_reviewers }} adds little new signal
+        but scales LLM cost and wall-time linearly. Default
+        is {{ default_n_reviewers }}; hard range is {{ min_n_reviewers }}–{{ max_n_reviewers }}.
+      </p>
+      <input type="number" name="n_reviewers" id="n-reviewers-input"
+             value="{{ default_n_reviewers }}"
+             min="{{ min_n_reviewers }}"
+             max="{{ max_n_reviewers }}"
+             data-hard-max="{{ max_n_reviewers }}"
+             step="1"
+             style="width: 6rem;">
+      <span id="n-reviewers-max-note" class="muted" style="margin-left: 0.5rem; font-size: 0.9rem;"></span>
+      <p id="n-reviewers-error" class="warn-text"
+         style="display: none; margin: 0.4rem 0 0 0; color: var(--major, #c33); font-size: 0.9rem;"></p>
+
+      <h2 style="margin-top: 1.2rem;">3. Upload the PDF</h2>
+      <label class="file-input">
+        <input type="file" name="pdf" accept="application/pdf" required>
+        <span>Choose PDF</span>
+      </label>
+      <button type="submit" class="primary">Start review</button>
+      <p class="hint">Typical end-to-end time is 1–5 minutes, depending on paper length, API latency, and number of reviewers.</p>
+    </form>
+
+    <script>
+      // Constrain the n_reviewers input to the active database's size.
+      // The backend also validates (defense in depth), but this surfaces
+      // the error in the form instead of as a post-submit flash.
+      (function () {
+        var sel = document.getElementById('database-select');
+        var input = document.getElementById('n-reviewers-input');
+        var note = document.getElementById('n-reviewers-max-note');
+        var err = document.getElementById('n-reviewers-error');
+        var form = sel && sel.form;
+        if (!sel || !input || !form) return;
+        var HARD_MAX = parseInt(input.getAttribute('data-hard-max'), 10) || 20;
+
+        // Returns {effective, limitedBy} where limitedBy is "db" when the
+        // database has fewer reviewers than the per-run hard cap, else "cap".
+        function currentLimit() {
+          var opt = sel.options[sel.selectedIndex];
+          var dbSize = opt && parseInt(opt.getAttribute('data-n-reviewers'), 10);
+          if (!dbSize || dbSize <= 0) {
+            return { effective: HARD_MAX, limitedBy: 'cap', dbSize: 0 };
+          }
+          if (dbSize < HARD_MAX) {
+            return { effective: dbSize, limitedBy: 'db', dbSize: dbSize };
+          }
+          return { effective: HARD_MAX, limitedBy: 'cap', dbSize: dbSize };
+        }
+
+        function sync() {
+          var lim = currentLimit();
+          input.max = String(lim.effective);
+          // Only show a note when the DATABASE is the constraint. When the
+          // hard per-run cap limits instead, the native max attribute
+          // already constrains the input — no note needed.
+          if (lim.limitedBy === 'db') {
+            note.textContent = '(max for this database: ' + lim.effective + ')';
+          } else {
+            note.textContent = '';
+          }
+          validate();
+        }
+
+        function validate() {
+          var v = parseInt(input.value, 10);
+          var lim = currentLimit();
+          if (!isNaN(v) && v > lim.effective) {
+            if (lim.limitedBy === 'db') {
+              err.textContent =
+                'The selected database has only ' + lim.dbSize +
+                ' reviewer' + (lim.dbSize === 1 ? '' : 's') +
+                '. Lower the number or pick a larger database.';
+            } else {
+              err.textContent =
+                'Maximum ' + HARD_MAX + ' reviewers per run (system cap). ' +
+                'Lower the number.';
+            }
+            err.style.display = '';
+            return false;
+          }
+          err.style.display = 'none';
+          err.textContent = '';
+          return true;
+        }
+
+        sel.addEventListener('change', sync);
+        input.addEventListener('input', validate);
+        form.addEventListener('submit', function (e) {
+          if (!validate()) {
+            e.preventDefault();
+            input.focus();
+          }
+        });
+        sync();
+      })();
+    </script>
+  </section>
+
+  <section class="card">
+    <h2>Recent reviews</h2>
+    {% if recent_jobs %}
+      <table class="rows">
+        <thead><tr><th>Run</th><th>PDF file</th><th>Status</th><th>Updated</th><th></th></tr></thead>
+        <tbody>
+          {% for j in recent_jobs %}
+            <tr>
+              <td><code>{{ j.id_short }}</code></td>
+              <td>{{ j.filename or '—' }}</td>
+              <td><span class="pill pill-{{ j.status }}">{{ j.status }}</span></td>
+              <td class="muted">{{ j.updated_at[:19].replace('T', ' ') if j.updated_at else '' }}</td>
+              <td>
+                {% if j.status == 'done' %}
+                  <a href="{{ url_for('review_result', job_id=j.id) }}">View</a>
+                {% else %}
+                  <a href="{{ url_for('review_status', job_id=j.id) }}">Status</a>
+                {% endif %}
+                <form method="post" action="{{ url_for('review_delete', job_id=j.id) }}"
+                      style="display:inline; margin-left: 0.75rem;"
+                      onsubmit="return confirm('Delete review {{ j.id_short }}? This removes its files from disk and cannot be undone.');">
+                  <button type="submit" class="link-button" title="Delete this review">Delete</button>
+                </form>
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p class="muted">No reviews yet.</p>
+    {% endif %}
+  </section>
+{% endblock %}
+

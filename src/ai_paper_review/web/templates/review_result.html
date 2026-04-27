@@ -1,0 +1,294 @@
+{% extends "base.html" %}
+{% block title %}Review: {{ data.paper.title[:60] }}{% endblock %}
+{% block content %}
+  <section>
+    <p class="muted"><a href="{{ url_for('review_launcher') }}">← Back to review</a></p>
+    <h1>{{ data.paper.title }}</h1>
+    <p class="muted" style="border-left: 3px solid var(--warn); padding: 0.5rem 0.75rem; background: rgba(0,0,0,0.02);">
+      <strong>Reminder:</strong> this output is a <strong>draft-polishing aid</strong> — it is not a peer-review
+      generator. Most venues have strict policies against using LLMs in assigned reviews. Please use it at your
+      own discretion, and indicate when you have used it. Every comment is a
+      <strong>suggestion to evaluate</strong>, not a finding to accept. AI reviewers hallucinate, miss context,
+      and over-confidently flag non-issues. Expect to reject roughly half of what you see.
+    </p>
+    <div class="download-row">
+      <a class="button" href="{{ url_for('review_download', job_id=job_id, kind='md') }}">Download report (.md)</a>
+      <a class="button" href="{{ url_for('review_download', job_id=job_id, kind='data') }}">Download per-reviewer data (.md)</a>
+      {% if data.clarity_review and data.clarity_review.comments %}
+        <a class="button" href="{{ url_for('review_download', job_id=job_id, kind='clarity') }}">Download writing clarity review (.md)</a>
+      {% endif %}
+      <form method="post" action="{{ url_for('review_delete', job_id=job_id) }}"
+            style="display:inline;"
+            onsubmit="return confirm('Delete this review? Files will be removed from disk and cannot be recovered.');">
+        <button type="submit" class="button button-danger" title="Delete this review and its files">Delete review</button>
+      </form>
+    </div>
+    {% if data.llm_provider and data.llm_model %}
+      <p class="muted" style="margin-top: 0.8rem; font-size: 0.9rem;">
+        <strong>LLM:</strong> <code>{{ data.llm_provider }}</code> / <code>{{ data.llm_model }}</code>
+        &nbsp;·&nbsp; <strong>Base URL:</strong> <code>{{ data.llm_base_url or '(default)' }}</code>
+        {% if data.launched_at %}
+          &nbsp;·&nbsp; <strong>Launched:</strong> {{ data.launched_at }}
+        {% endif %}
+        {% if data.ended_at %}
+          &nbsp;·&nbsp; <strong>Ended:</strong> {{ data.ended_at }}
+        {% endif %}
+      </p>
+    {% endif %}
+  </section>
+
+  {% if run_files %}
+    {# One macro for the three run-files tables so column changes land in one place. #}
+    {% macro run_files_table(files) -%}
+      <table class="rows run-files">
+        <colgroup>
+          <col class="col-file">
+          <col class="col-size">
+          <col class="col-description">
+        </colgroup>
+        <thead><tr><th>File</th><th>Size</th><th>Description</th></tr></thead>
+        <tbody>
+          {% for f in files %}
+            <tr>
+              <td><code>{{ f.abs_path }}</code></td>
+              <td class="muted" style="white-space: nowrap;">{{ f.size }}</td>
+              <td>{{ f.description }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {%- endmacro %}
+
+    <section class="card">
+      <h2>Source files on disk</h2>
+      <p class="muted" style="font-size: 0.9rem;">
+        Everything produced by this review lives in a single directory. Paths
+        below are absolute so you can copy-paste straight into a shell.
+      </p>
+      <p><strong>Run directory:</strong> <code>{{ run_files.run_dir }}</code></p>
+
+      {% if run_files.inputs %}
+        <h3 style="margin-top: 1rem;">Inputs</h3>
+        {{ run_files_table(run_files.inputs) }}
+      {% endif %}
+
+      {% if run_files.outputs %}
+        <h3 style="margin-top: 1rem;">Outputs</h3>
+        {{ run_files_table(run_files.outputs) }}
+      {% endif %}
+
+      {% if run_files.internal %}
+        <details style="margin-top: 1rem;">
+          <summary class="muted">Internal artifacts ({{ run_files.internal|length }})</summary>
+          <div style="margin-top: 0.5rem;">
+            {{ run_files_table(run_files.internal) }}
+          </div>
+        </details>
+      {% endif %}
+    </section>
+  {% endif %}
+
+  <section class="card">
+    <h2>Selected reviewers</h2>
+    <p class="muted">{{ data.selected|length }} reviewers selected by topic similarity, then diversified across personas.</p>
+    <table class="rows">
+      <thead><tr><th>ID</th><th>Domain</th><th>Persona</th><th>Selection Relevance</th></tr></thead>
+      <tbody>
+        {% for r in data.selected %}
+          <tr>
+            <td><a href="{{ url_for('reviewer_detail', rid=r.id) }}"><code>{{ r.id }}</code></a></td>
+            <td>{{ r.domain }}</td>
+            <td>{{ r.persona }}</td>
+            <td>{{ "%.3f"|format(r.score) }}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% if data.n_reviewers_total is defined %}
+      <p class="muted" style="margin-top: 0.8rem; font-size: 0.9rem;">
+        <strong>Format-fix retries:</strong>
+        {{ data.n_format_repairs or 0 }} of {{ data.n_reviewers_total }}
+        reviewer(s) (incl. the clarity reviewer)
+        needed a markdown-repair pass to produce usable output.
+        {% if (data.n_format_repairs or 0) > 0 %}
+          A high count suggests the model is deviating from the expected
+          comment format — consider a different provider/model or
+          tightening the persona prompt.
+        {% endif %}
+      </p>
+    {% endif %}
+  </section>
+
+  {% if data.clarity_review and data.clarity_review.comments %}
+    <section class="card">
+      <h2>Writing clarity review</h2>
+      <p class="muted">
+        Always-on reviewer focused on writing quality (flow, terminology,
+        grammar, figures, structure). Not part of the ranked issues and
+        not compared against human reviewers during Validation —
+        <code>{{ data.clarity_review._reviewer_id }}</code> /
+        {{ data.clarity_review._persona }}.
+      </p>
+      {% for c in data.clarity_review.comments %}
+        {% set sev = c.severity or 'minor' %}
+        <article class="issue issue-{{ sev }}">
+          <header>
+            <span class="sev sev-{{ sev }}">{{ sev|upper }}</span>
+            <span class="muted" style="font-size: 0.9rem;">
+              category: <code>{{ c.category or 'clarity' }}</code>,
+              section: <code>{{ c.section_reference or 'general' }}</code>
+            </span>
+          </header>
+          {% if c.summary %}<p><strong>{{ c.summary }}</strong></p>{% endif %}
+          {% if c.description %}<p>{{ c.description }}</p>{% endif %}
+        </article>
+      {% endfor %}
+    </section>
+  {% endif %}
+
+  <section>
+    <h2>Ranked issues</h2>
+    <p class="muted">
+      Ordered by <strong>commonality × importance</strong>: issues multiple
+      reviewers raise, weighted by how severe they are, rise to the top.
+    </p>
+    <details style="margin: 0.5rem 0 1rem 0;">
+      <summary><strong>How the score is computed</strong></summary>
+      <div style="margin-top: 0.6rem; font-size: 0.95rem;">
+        <p>
+          Each issue cluster groups comments that look like the same concern
+          (cosine similarity on summary + keywords). Clusters are then scored:
+        </p>
+        <pre style="padding: 0.6rem 0.9rem;"><code>score = num_distinct_reviewers × (0.5·avg_severity + 0.5·max_severity)</code></pre>
+        <p>
+          where severity weights are:
+        </p>
+        <ul>
+          <li><span class="sev sev-major">MAJOR</span> = 3 (would block acceptance)</li>
+          <li><span class="sev sev-moderate">MODERATE</span> = 2 (significant revision)</li>
+          <li><span class="sev sev-minor">MINOR</span> = 1 (improvement but not blocking)</li>
+        </ul>
+        <p>
+          Higher-severity comments AND broader reviewer agreement both push
+          a cluster up. Intuition: one reviewer's minor issue scores 1·(0.5·1 + 0.5·1) = 1;
+          three reviewers agreeing on a moderate issue scores 3·(0.5·2 + 0.5·2) = 6;
+          five reviewers on a mix of major and moderate scores
+          5·(0.5·2.4 + 0.5·3) = 13.5.
+        </p>
+        <p style="margin-top: 0.6rem;">
+          <strong>The severity badge next to each cluster shows the worst
+          individual comment in the cluster</strong>, not an average. A
+          cluster can legitimately have score 6 with a <span class="sev sev-minor">MINOR</span>
+          label — that means six reviewers all flagged the same thing as
+          minor, and none escalated it to moderate or major. The count of
+          agreeing reviewers still pushes its score up. The small coloured
+          chips beside the label ("<span class="sev-chip sev-minor">6 minor</span>"
+          etc.) show the severity mix so you can tell a broadly-agreed nit
+          from a genuinely severe issue at a glance.
+        </p>
+      </div>
+    </details>
+    <details style="margin: 0.5rem 0 1rem 0;">
+      <summary><strong>What the <code>category</code> and <code>section</code> fields show</strong></summary>
+      <div style="margin-top: 0.6rem; font-size: 0.95rem;">
+        <p>
+          Each cluster row shows two tags pulled from the representative
+          comment (the highest-severity member):
+        </p>
+        <ul>
+          <li>
+            <code>category</code> — a classification of <em>what kind of
+            concern</em> this is, snapped to a fixed vocabulary at parse
+            time. Examples: <code>novelty</code>, <code>evaluation</code>,
+            <code>methodology</code>, <code>reproducibility</code>,
+            <code>presentation</code>, <code>deployment</code>,
+            <code>related_work</code>, <code>correctness</code>. This is
+            what the validator uses to route each miss to an expected
+            persona (Methodology Critic catches <code>methodology</code>,
+            Novelty Hunter catches <code>novelty</code>, etc.). Shown as
+            <code>general</code> if the LLM didn't pick a specific one.
+          </li>
+          <li>
+            <code>section</code> — a normalized anchor into <em>where in
+            the paper</em> the comment applies, extracted from the
+            reviewer's text by pattern matching: <code>Section 3.2</code>,
+            <code>Table 2</code>, <code>Figure 4</code>,
+            <code>Algorithm 1</code>, <code>Eq. 7</code>, or named parts
+            like <code>Abstract</code>, <code>Introduction</code>,
+            <code>Related Work</code>, <code>Conclusion</code>,
+            <code>References</code>. Shown as <code>general</code> when
+            the comment doesn't point at any specific part of the paper.
+          </li>
+        </ul>
+        <p>
+          Clusters group comments by semantic similarity, so the
+          representative's category and section are shared by most of
+          the cluster — but individual members may phrase section
+          references slightly differently. Expand the "other reviewers
+          raised the same issue" details below each cluster to see the
+          full text each reviewer wrote.
+        </p>
+      </div>
+    </details>
+    {% for c in data.ranked_clusters %}
+      {% set rep = c.representative %}
+      {% set sev = rep.severity or 'minor' %}
+      <article class="issue issue-{{ sev }}">
+        <header>
+          <span class="rank">#{{ c.rank }}</span>
+          <span class="sev sev-{{ sev }}">{{ sev|upper }}</span>
+          {# Severity mix — makes "score 6, MINOR" readable as "6 reviewers all flagged this as minor". Only shown for multi-member clusters. #}
+          {% if c.members|length > 1 %}
+            {% set n_major = c.members|selectattr('severity', 'equalto', 'major')|list|length %}
+            {% set n_moderate = c.members|selectattr('severity', 'equalto', 'moderate')|list|length %}
+            {% set n_minor = c.members|selectattr('severity', 'equalto', 'minor')|list|length %}
+            <span class="sev-mix" title="How the {{ c.members|length }} comments in this cluster break down by severity. The label above reflects the worst individual comment.">
+              {% if n_major %}<span class="sev-chip sev-major">{{ n_major }} major</span>{% endif %}
+              {% if n_moderate %}<span class="sev-chip sev-moderate">{{ n_moderate }} moderate</span>{% endif %}
+              {% if n_minor %}<span class="sev-chip sev-minor">{{ n_minor }} minor</span>{% endif %}
+            </span>
+          {% endif %}
+        </header>
+        <p class="issue-meta">
+          <span>Score <strong>{{ c.score }}</strong></span>
+          <span>{{ c.size }} comment{{ 's' if c.size != 1 }}</span>
+          <span>{{ c.num_distinct_reviewers }} reviewer{{ 's' if c.num_distinct_reviewers != 1 }}</span>
+          <span>category: <code>{{ rep.category or 'general' }}</code></span>
+          <span>section: <code>{{ rep.section_reference or 'general' }}</code></span>
+        </p>
+        <p><strong>Description.</strong> {{ rep.description }}</p>
+        {% if c.members|length > 1 %}
+          <details>
+            <summary>{{ c.members|length - 1 }} other reviewer{{ 's' if c.members|length - 1 != 1 }} raised the same issue</summary>
+            <ul class="alt-phrasings">
+              {% for m in c.members %}
+                {% if m is not sameas rep %}
+                  <li>
+                    <div class="alt-phrasing-head">
+                      <a href="{{ url_for('reviewer_detail', rid=m._reviewer_id) }}"
+                         title="View this reviewer's persona / system prompt"><code>{{ m._reviewer_id }}</code></a>
+                      <span>({{ m._persona }})</span>
+                      <span class="sev sev-{{ m.severity or 'minor' }}">{{ (m.severity or 'minor')|upper }}</span>
+                      <span class="muted" style="font-size: 0.9rem;">
+                        category: <code>{{ m.category or 'general' }}</code>,
+                        section: <code>{{ m.section_reference or 'general' }}</code>
+                      </span>
+                    </div>
+                    {% if m.summary %}
+                      <p class="alt-phrasing-summary"><strong>{{ m.summary }}</strong></p>
+                    {% endif %}
+                    {% if m.description %}
+                      <p class="alt-phrasing-description">{{ m.description }}</p>
+                    {% endif %}
+                  </li>
+                {% endif %}
+              {% endfor %}
+            </ul>
+          </details>
+        {% endif %}
+      </article>
+    {% else %}
+      <p>No issues were raised — surprising; the reviewers produced no comments for this paper.</p>
+    {% endfor %}
+  </section>
+{% endblock %}

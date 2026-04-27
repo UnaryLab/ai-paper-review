@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block title %}AI review database — {{ database_label }}{% endblock %}
+{% block content %}
+  <section>
+    <p class="muted">
+      <a href="{{ url_for('databases_list') }}">← Back to Database</a>
+    </p>
+    <h1>{{ database_label }}</h1>
+    <p class="lede">{{ reviewers|length }} of {{ total }} reviewers — filter by domain, persona, or keyword.</p>
+  </section>
+
+  <section class="card">
+    <form method="get" class="filter-form">
+      <label>Domain
+        <select name="domain">
+          <option value="">All ({{ domains|length }})</option>
+          {% for d in domains %}
+            <option value="{{ d }}" {% if d == selected_domain %}selected{% endif %}>{{ d }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Persona
+        <select name="persona">
+          <option value="">All ({{ personas|length }})</option>
+          {% for p in personas %}
+            <option value="{{ p }}" {% if p == selected_persona %}selected{% endif %}>{{ p }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Search
+        <input type="search" name="q" value="{{ q }}" placeholder="id, domain, persona, keyword…">
+      </label>
+      <button type="submit">Filter</button>
+      <a href="{{ url_for('databases_view', name=database_id) }}" class="button">Reset</a>
+    </form>
+  </section>
+
+  <section class="reviewer-grid">
+    {% for r in reviewers %}
+      <article class="reviewer-card">
+        <header>
+          <a class="rid" href="{{ url_for('databases_reviewer_detail', name=database_id, rid=r.id) }}">{{ r.id }}</a>
+          <span class="persona">{{ r.persona }}</span>
+        </header>
+        <p class="domain">{{ r.domain }}</p>
+        <p class="focus">{{ r.focus }}</p>
+        <p class="keywords">
+          {% for k in r.keywords[:6] %}<code>{{ k }}</code>{% endfor %}
+          {% if r.keywords|length > 6 %}<span class="muted">+{{ r.keywords|length - 6 }}</span>{% endif %}
+        </p>
+      </article>
+    {% else %}
+      <p>No reviewers match.</p>
+    {% endfor %}
+  </section>
+{% endblock %}

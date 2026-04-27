@@ -1,0 +1,153 @@
+{% extends "base.html" %}
+{% block title %}AI review validation{% endblock %}
+{% block content %}
+  <section>
+    <h1>AI review validation</h1>
+    <p class="lede">
+      Upload the actual human reviews and the AI review they should be compared to.
+      The validation returns a calibration report — which persona prompts should be
+      strengthened, which should be quieted, and what the human reviewers caught that
+      the AI missed.
+    </p>
+
+    {% if not any_provider_configured %}
+      <div class="warn">
+        <strong>No LLM API is configured.</strong>
+        Head to the <a href="{{ url_for('model_settings') }}">Model page</a>
+        to pick a provider and set its key, or edit <code>config.yaml</code>
+        directly — then come back here.
+      </div>
+    {% endif %}
+  </section>
+
+  <section class="card">
+    <form method="post" enctype="multipart/form-data">
+      {% if llm_status %}
+        <p class="hint">
+          Currently using <code>{{ llm_status.validation_provider }}</code> /
+          <code>{{ llm_status.validation_model }}</code>
+          {% if llm_status.validation_provider != llm_status.review_provider %}
+            (different from the review provider
+            <code>{{ llm_status.review_provider }}</code>).
+          {% elif llm_status.validation_model != llm_status.review_model %}
+            (different model from the review model).
+          {% else %}
+            (same as the review model).
+          {% endif %}
+          Change on the <a href="{{ url_for('model_settings') }}">Model page</a>.
+        </p>
+      {% endif %}
+
+      <h2>1. Human review</h2>
+      <p class="hint">
+        Upload the human review as either a raw text file or a markdown file.
+        An LLM converts it into the same structured AI-review format so the
+        validator can compare comment-by-comment. The validation is robust to different human review styles and formats,
+        but may struggle with very terse reviews that lack clear comment boundaries.
+      </p>
+
+      <label class="file-input">
+        <input type="file" name="actual" required>
+        <span>Choose human review file</span>
+      </label>
+
+      <h2 style="margin-top: 2rem;">2. AI review</h2>
+      <p class="hint">
+        Either reuse a prior AI review from this server, or upload one.
+        {% if past_reviews %}Defaulting to your most recent review below —
+        change to <em>— none —</em> if you'd rather upload a different file.{% endif %}
+      </p>
+
+      {% if past_reviews %}
+        <label for="ai_job_id">Prior AI review</label>
+        <select name="ai_job_id" id="ai_job_id">
+          <option value="">— none (upload a file below instead) —</option>
+          {% for p in past_reviews %}
+            <option value="{{ p.job_id }}" {% if loop.first %}selected{% endif %}>
+              {{ p.title[:80] }}
+              {%- if p.created_at %} ({{ p.created_at[:16].replace('T', ' ') }})
+              {%- else %} ({{ p.job_id }}){% endif %}
+            </option>
+          {% endfor %}
+        </select>
+      {% endif %}
+
+      <div id="ai-review-upload-box" style="margin-top: 1rem;"
+           {% if past_reviews %}data-optional="true"{% endif %}>
+        <label class="file-input">
+          <input type="file" name="ai_review" id="ai_review_file" accept=".md">
+          <span id="ai_review_file_span">
+            {% if past_reviews %}…or upload a different review_data.md{% else %}Upload review_data.md{% endif %}
+          </span>
+        </label>
+        <p id="ai-upload-skipped-note" class="hint"
+           style="{% if not past_reviews %}display:none;{% endif %} margin-top: 0.4rem;">
+          ✓ Using the selected prior review — no file upload needed.
+        </p>
+      </div>
+
+      <script>
+        // Visually indicate when the user has selected a prior review that the
+        // file upload below is not needed. Flips back when they pick "— none —".
+        (function() {
+          var sel = document.getElementById('ai_job_id');
+          if (!sel) return;
+          var box = document.getElementById('ai-review-upload-box');
+          var note = document.getElementById('ai-upload-skipped-note');
+          var fileInput = document.getElementById('ai_review_file');
+          function sync() {
+            var usingPrior = sel.value !== '';
+            box.style.opacity = usingPrior ? '0.5' : '1.0';
+            fileInput.disabled = usingPrior;
+            note.style.display = usingPrior ? '' : 'none';
+          }
+          sel.addEventListener('change', sync);
+          sync();
+        })();
+      </script>
+
+      <div style="margin-top: 2rem;">
+        <button type="submit" class="primary">Run validation</button>
+      </div>
+    </form>
+  </section>
+
+  <section class="card">
+    <h2 style="margin-bottom: 1rem;">Recent validations</h2>
+    {% if recent_validations %}
+      <table class="rows">
+        <thead><tr>
+          <th>Run</th>
+          <th>Human review file</th>
+          <th>Status</th>
+          <th>Updated</th>
+          <th style="min-width: 10rem;"></th>
+        </tr></thead>
+        <tbody>
+          {% for v in recent_validations %}
+            <tr>
+              <td><code>{{ v.run_id }}</code></td>
+              <td>{{ v.actual_filename or '—' }}</td>
+              <td><span class="pill pill-{{ v.status }}">{{ v.status }}</span></td>
+              <td class="muted">{{ v.updated_at[:19].replace('T', ' ') if v.updated_at else '' }}</td>
+              <td style="white-space: nowrap;">
+                {% if v.status == 'done' %}
+                  <a href="{{ url_for('validate_result_view', run_dir=v.run_id) }}">View</a>
+                {% else %}
+                  <a href="{{ url_for('validate_status', run_id=v.run_id) }}">Status</a>
+                {% endif %}
+                <form method="post" action="{{ url_for('validate_delete', run_dir=v.run_id) }}"
+                      style="display:inline; margin-left: 0.75rem;"
+                      onsubmit="return confirm('Delete validation {{ v.run_id }}? This removes its files from disk and cannot be undone.');">
+                  <button type="submit" class="link-button" title="Delete this validation">Delete</button>
+                </form>
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p class="muted">No validations yet.</p>
+    {% endif %}
+  </section>
+{% endblock %}
