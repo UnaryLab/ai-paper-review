@@ -46,7 +46,7 @@ _PROVIDER_LABELS = {
 # so the kind is visible at a glance in the dropdown.
 _UI_PROVIDERS = (
     "anthropic_api", "openai_api", "google_api", "xai_api",
-    "github_api", "copilot_sdk", "claude_sdk",
+    "github_api", "claude_sdk", "copilot_sdk",
     "openai_compatible_api",
 )
 
