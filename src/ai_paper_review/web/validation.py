@@ -483,7 +483,7 @@ def list_validations() -> List[Dict[str, Any]]:
     Unions in-memory ``VALIDATE_JOBS`` (running runs) with on-disk
     ``validation_*`` directories (completed runs that survive restart).
     On overlap, the in-memory entry wins because it carries fresher
-    status. Capped at 20 newest by ``updated_at``.
+    status. Sorted newest-first by ``updated_at``.
     """
     # Files the validation worker writes into the run_dir; used to tell
     # the uploaded AI-review file (saved under its original name) apart
@@ -563,4 +563,4 @@ def list_validations() -> List[Dict[str, Any]]:
 
     out = list(rows.values())
     out.sort(key=lambda d: d["updated_at"], reverse=True)
-    return out[:20]
+    return out

@@ -276,7 +276,7 @@ def review_launcher():
             ({"id": k, **v, "id_short": k} for k, v in JOBS.items()),
             key=lambda j: j.get("created_at", ""),
             reverse=True,
-        )[:5]
+        )
     try:
         llm_status = describe_config()
         providers = probe_providers()
