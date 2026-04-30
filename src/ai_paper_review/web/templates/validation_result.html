@@ -128,7 +128,7 @@
         <th>False alarms</th><th>Noise ratio</th>
       </tr></thead>
       <tbody>
-        {% for ps in calibration.persona_stats %}
+        {% for ps in calibration.persona_stats | sort(attribute='reviewer_id') %}
           <tr>
             <td><code>{{ ps.reviewer_id or '—' }}</code></td>
             <td>{{ ps.persona }}</td>

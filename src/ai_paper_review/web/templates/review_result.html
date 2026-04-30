@@ -94,7 +94,7 @@
     <table class="rows">
       <thead><tr><th>ID</th><th>Domain</th><th>Persona</th><th>Selection Relevance</th></tr></thead>
       <tbody>
-        {% for r in data.selected %}
+        {% for r in data.selected | sort(attribute='id') %}
           <tr>
             <td><a href="{{ url_for('reviewer_detail', rid=r.id) }}"><code>{{ r.id }}</code></a></td>
             <td>{{ r.domain }}</td>
