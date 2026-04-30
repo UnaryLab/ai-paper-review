@@ -122,6 +122,12 @@
 
   <section class="card">
     <h2>Per-persona performance</h2>
+    <p class="hint">
+      <strong>Emitted</strong> — total AI comments this reviewer produced.
+      <strong>Caught</strong> — distinct human comments this reviewer helped match (as primary or supporting); can exceed Emitted when one AI comment matches several human comments.
+      <strong>False alarms</strong> — AI comments that matched no human comment (sim &lt; 0.35).
+      <strong>Noise ratio</strong> — False alarms ÷ Emitted.
+    </p>
     <table class="rows">
       <thead><tr>
         <th>Reviewer ID</th><th>Persona</th><th>Emitted</th><th>Caught</th>

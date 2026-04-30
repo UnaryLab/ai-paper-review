@@ -24,7 +24,8 @@ from __future__ import annotations
 import logging
 import pathlib
 import re
-from typing import Any, Dict, List, Optional
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -33,6 +34,12 @@ from ai_paper_review import prompts
 from .constants import BATCH_PARTIAL_THR, BATCH_SAME_THR
 
 logger = logging.getLogger("validator")
+
+# Human comments are split into chunks of this size before being sent to the
+# LLM. Each chunk becomes one parallel call with the full AI comment set.
+# Keeping chunks small avoids per-request output-token limits on
+# subscription-tier providers (e.g. claude_sdk).
+_HUMAN_CHUNK_SIZE = 10
 
 
 def _fmt_comments_for_prompt(
@@ -54,6 +61,62 @@ def _fmt_comments_for_prompt(
         text = text.replace("\n", " ").strip()[:800]
         lines.append(f"- **{cid}**: {text}")
     return "\n".join(lines)
+
+
+def _call_single_chunk(
+    actual_chunk: List[Dict[str, Any]],
+    ai_slice: List[Dict[str, Any]],
+    ai_ids: List[str],
+    ai_block: str,
+    llm_client: Any,
+    system_prompt: str,
+    chunk_idx: int,
+) -> Tuple[np.ndarray, str, int, str]:
+    """Run one LLM call for a chunk of human comments × all AI comments.
+
+    Returns ``(sub_matrix, raw_response, n_parsed, user_msg)`` where
+    ``sub_matrix`` has shape ``(len(actual_chunk), len(ai_slice))``.
+    The caller assembles sub-matrices from each chunk into the full
+    N×M similarity matrix.
+    """
+    human_ids_chunk = [
+        str(c.get("id") or c.get("comment_id") or f"H{i+1}")
+        for i, c in enumerate(actual_chunk)
+    ]
+    human_block = _fmt_comments_for_prompt(actual_chunk, "human")
+
+    chunk_pairs = len(actual_chunk) * len(ai_slice)
+    user_msg = prompts.load(
+        "batch_alignment_user",
+        human_block=human_block,
+        ai_block=ai_block,
+        pair_count=chunk_pairs,
+        example_human_id=human_ids_chunk[0],
+        example_ai_id=ai_ids[0],
+    )
+
+    budget = min(32000, max(4000, chunk_pairs * 12))
+    logger.debug(
+        "_call_single_chunk[%d]: %d human × %d AI = %d pairs (budget=%d)",
+        chunk_idx, len(actual_chunk), len(ai_slice), chunk_pairs, budget,
+    )
+    try:
+        raw = llm_client.complete(system_prompt, user_msg, max_tokens=budget)
+    except Exception as e:
+        raise RuntimeError(
+            f"Batch alignment LLM call failed for chunk {chunk_idx} "
+            f"({type(e).__name__}: {e}). "
+            f"Check provider config, API quota, and network."
+        ) from e
+
+    sub_matrix, n_parsed = _parse_batch_similarity_matrix(
+        raw, human_ids_chunk, ai_ids,
+    )
+    logger.debug(
+        "_call_single_chunk[%d]: parsed %d / %d similarity lines",
+        chunk_idx, n_parsed, chunk_pairs,
+    )
+    return sub_matrix, raw, n_parsed, user_msg
 
 
 def _parse_batch_similarity_matrix(
@@ -175,13 +238,19 @@ def align_comments_batch_llm(
     max_comments_per_side: int = 120,
     run_dir: Optional[Any] = None,
 ) -> Dict[str, Any]:
-    """Align human comments to AI comments with a **single** LLM call.
+    """Align human comments to AI comments using parallel chunked LLM calls.
+
+    Human comments are split into chunks of ``_HUMAN_CHUNK_SIZE`` (10).
+    Each chunk is sent as a separate LLM call paired with the full AI
+    comment set, and the results are assembled into a single N×M
+    similarity matrix before computing hits/misses/false-alarms.
+
+    Running chunks in parallel avoids per-request output-token limits that
+    large single-batch calls hit on subscription-tier providers.
 
     Returns the same dict shape downstream consumers (metrics,
     calibration, report) expect — see module docstring for details.
     """
-    # 120 per side comfortably fits typical 100k+ context windows; bigger
-    # values risk truncated responses and degraded reasoning.
     if len(actual) > max_comments_per_side:
         logger.warning(
             "Human review has %d comments; truncating to %d for batch "
@@ -207,55 +276,65 @@ def align_comments_batch_llm(
                 "n_strengths": 0, "llm_comparison": None,
                 "aligner": "batch-llm"}
 
-    human_ids = [str(c.get("id") or c.get("comment_id") or f"H{i+1}")
-                 for i, c in enumerate(actual_slice)]
+    # Precompute AI side once — shared across all chunks.
     ai_ids = [str(c.get("id") or c.get("comment_id") or f"A{j+1}")
               for j, c in enumerate(ai_slice)]
-    human_block = _fmt_comments_for_prompt(actual_slice, "human")
     ai_block = _fmt_comments_for_prompt(ai_slice, "ai")
-
-    # Use real IDs as the worked example so the LLM echoes the same
-    # convention. With abstract placeholders like H1/A1, the model would
-    # anchor on those instead of the real shape (e.g. "Reviewer_qFvT-C1"),
-    # and the parser would skip every emitted line as an unknown ID —
-    # yielding an all-zero matrix despite the raw response looking fine.
-    example_hid = human_ids[0]
-    example_aid = ai_ids[0]
-
     system_prompt = prompts.load("batch_alignment_system")
-    user_msg = prompts.load(
-        "batch_alignment_user",
-        human_block=human_block,
-        ai_block=ai_block,
-        pair_count=len(human_ids) * len(ai_ids),
-        example_human_id=example_hid,
-        example_ai_id=example_aid,
-    )
 
+    chunks = [
+        actual_slice[i:i + _HUMAN_CHUNK_SIZE]
+        for i in range(0, len(actual_slice), _HUMAN_CHUNK_SIZE)
+    ]
+    n_chunks = len(chunks)
     total = len(actual_slice) * len(ai_slice)
+
     logger.info(
-        "align_comments (batch LLM): one call for %d human × %d AI = "
-        "%d pairs (model=%s)",
+        "align_comments (batch LLM): %d human × %d AI = %d pairs, "
+        "%d chunk%s of ≤%d (model=%s)",
         len(actual_slice), len(ai_slice), total,
+        n_chunks, "s" if n_chunks != 1 else "", _HUMAN_CHUNK_SIZE,
         getattr(llm_client, "model", "?"),
     )
 
-    # max_tokens scaled to fit 120×120 ≈ 80k tokens of similarity lines,
-    # capped at a value most providers honor.
-    budget = min(32000, max(4000, total * 12))
-    try:
-        raw = llm_client.complete(system_prompt, user_msg, max_tokens=budget)
-    except Exception as e:
-        raise RuntimeError(
-            f"Batch alignment LLM call failed ({type(e).__name__}: {e}). "
-            f"Check provider config, API quota, and network."
-        ) from e
+    # Fan out: one parallel LLM call per chunk. futures preserve chunk order.
+    with ThreadPoolExecutor(max_workers=n_chunks) as pool:
+        futures = [
+            pool.submit(
+                _call_single_chunk,
+                chunk, ai_slice, ai_ids, ai_block,
+                llm_client, system_prompt, ci,
+            )
+            for ci, chunk in enumerate(chunks)
+        ]
+        chunk_results: List[Tuple[np.ndarray, str, int, str]] = [
+            f.result() for f in futures
+        ]
 
-    sims, n_parsed = _parse_batch_similarity_matrix(raw, human_ids, ai_ids)
+    # Assemble full N×M matrix row-by-row from each chunk's sub-matrix.
+    sims = np.zeros((len(actual_slice), len(ai_slice)), dtype=np.float32)
+    n_parsed = 0
+    raw_parts: List[str] = []
+    user_msg_parts: List[str] = []
+    for ci, (sub_matrix, raw_i, n_i, user_msg_i) in enumerate(chunk_results):
+        start = ci * _HUMAN_CHUNK_SIZE
+        end = start + len(chunks[ci])
+        sims[start:end, :] = sub_matrix
+        n_parsed += n_i
+        chunk_header = (
+            f"## Chunk {ci + 1} / {n_chunks} "
+            f"(human rows {start + 1}–{end})"
+        )
+        raw_parts.append(f"{chunk_header}\n\n{raw_i}")
+        user_msg_parts.append(f"{chunk_header}\n\n{user_msg_i}")
+
+    raw = "\n\n---\n\n".join(raw_parts)
+    user_msg = "\n\n---\n\n".join(user_msg_parts)
+
     logger.info(
         "align_comments (batch LLM): parsed %d / %d similarity lines "
-        "from the response (%d chars)",
-        n_parsed, total, len(raw),
+        "across %d chunk%s (%d total chars)",
+        n_parsed, total, n_chunks, "s" if n_chunks != 1 else "", len(raw),
     )
     if n_parsed < total * 0.5:
         logger.warning(
@@ -349,7 +428,8 @@ def align_comments_batch_llm(
         "n_strengths": 0,
         "aligner": "batch-llm",
         "llm_comparison": {
-            "summary": (f"Batch LLM similarity over {total} pairs: "
+            "summary": (f"Batch LLM similarity over {total} pairs "
+                        f"({n_chunks} chunk{'s' if n_chunks != 1 else ''}): "
                         f"{len(hits)} hits, {len(misses)} misses, "
                         f"{len(false_alarms)} false alarms "
                         f"({n_parsed} / {total} pairs parsed from response)."),

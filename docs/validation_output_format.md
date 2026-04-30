@@ -19,7 +19,7 @@ A completed run writes eight files to its run directory:
 | `calibration_delta.json`       | Structured version of the same information; input to the cross-paper aggregation module.  |
 | `actual_converted.md`          | Human review after LLM conversion to AI-review format. Skipped if the input was already in AI format. |
 | `actual_raw_llm.md`            | Verbatim LLM output from the human-review conversion step (diagnostic; pre-parse). |
-| `alignment_llm_analysis.md`    | Raw LLM response + prompt for the single batch-similarity call.                           |
+| `alignment_llm_analysis.md`    | All chunk LLM responses + prompts for the alignment step, each labelled with its chunk range. |
 | `alignment_similarities.md`    | N × M similarity matrix (human × AI comments) parsed from the LLM response, with per-row verdict. |
 | `alignment_ranking.md`         | Human comments sorted by their best-match AI similarity, highest first.                   |
 | `_ui_state.json`               | Internal state snapshot for re-rendering the result page in the web UI.                   |
@@ -28,9 +28,9 @@ Plus whichever source files the user uploaded (the human review `.txt`/`.md`, an
 
 ---
 
-## 2. Alignment — one batch LLM call
+## 2. Alignment — parallel chunked LLM calls
 
-Validation compares a human review (N comments) against an AI review (M comments) by asking a single LLM call for an **N × M similarity matrix**. This replaces what used to be pairwise LLM calls (one per cell) and makes validation cheap enough to run on every completed review.
+Validation compares a human review (N comments) against an AI review (M comments) by asking the LLM for an **N × M similarity matrix**. The N human comments are split into chunks of 10; each chunk is sent as a separate LLM call paired with all M AI comments, and the results are assembled into the full matrix. All chunks run in parallel, so wall-clock time is roughly that of a single call.
 
 **Inputs to the alignment call:**
 
@@ -67,14 +67,15 @@ The parser has a four-tier resolver chain that accepts:
 
 If pass 1 (exact-only) parses 0 rows successfully, pass 2 enables the fuzzy fallbacks and logs a warning. Unparseable rows become `missed` with similarity 0.
 
-### Why it's a single call
+### Why chunked, not pairwise
 
-Four practical reasons:
+Three practical reasons:
 
-1. **Cost scales as O(N+M) tokens, not O(N·M) calls.** A 15-comment human review vs a 40-comment AI review used to mean 600 pairwise calls.
-2. **The LLM sees every AI comment when scoring each row.** It can actually say "A7 is the best match" rather than pairwise-score without context.
-3. **Validation finishes in ~30–90 s** for typical review sizes instead of minutes.
-4. **One file (`alignment_llm_analysis.md`) captures the full diagnostic record** — prompt + response — instead of hundreds of fragmented traces.
+1. **Cost scales as O(N+M) tokens per chunk, not O(N·M) calls.** A 15-comment human review vs a 40-comment AI review would mean 600 pairwise calls with the old approach.
+2. **The LLM sees every AI comment when scoring each chunk.** It can reason "A7 is the best match" with full context rather than scoring in isolation.
+3. **Chunks keep output-token budgets small.** A single call for a large human review can saturate per-request limits on subscription-tier providers; splitting to ≤10-human chunks avoids that. Parallel execution means wall-clock time stays comparable to a single large call.
+
+`alignment_llm_analysis.md` captures all chunk responses and prompts in one file, with `## Chunk N / total (human rows X–Y)` section headers so each chunk is traceable.
 
 ---
 
@@ -159,7 +160,7 @@ The structured form of the report, designed for programmatic cross-paper aggrega
 }
 ```
 
-`llm_comparison` is present whenever the batch alignment ran (always in current builds). In batch mode, `matches`, `missed`, and `extras` are always empty lists — the useful content is in `summary`, which holds a one-line text description of the batch alignment results (hit/miss/false-alarm counts and the number of similarity pairs parsed). `llm_comparison` is absent from the delta only when no alignment ran at all (run errored before Stage 3).
+`llm_comparison` is present whenever the alignment ran (always in current builds). `matches`, `missed`, and `extras` are always empty lists — the useful content is in `summary`, which holds a one-line text description of the alignment results (hit/miss/false-alarm counts, number of chunks, and the number of similarity pairs parsed). `llm_comparison` is absent from the delta only when no alignment ran at all (run errored before Stage 3).
 
 ### `metrics` shape
 
