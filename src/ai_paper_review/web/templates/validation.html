@@ -64,7 +64,7 @@
           <option value="">— none (upload a file below instead) —</option>
           {% for p in past_reviews %}
             <option value="{{ p.job_id }}" {% if loop.first %}selected{% endif %}>
-              {{ p.title[:80] }}
+              {{ p.label }}
               {%- if p.created_at %} ({{ p.created_at[:16].replace('T', ' ') }})
               {%- else %} ({{ p.job_id }}){% endif %}
             </option>
@@ -120,7 +120,7 @@
           <th>Run</th>
           <th>Human review file</th>
           <th>Status</th>
-          <th>Updated</th>
+          <th>Started</th>
           <th style="min-width: 10rem;"></th>
         </tr></thead>
         <tbody>
@@ -129,7 +129,7 @@
               <td><code>{{ v.run_id }}</code></td>
               <td>{{ v.actual_filename or '—' }}</td>
               <td><span class="pill pill-{{ v.status }}">{{ v.status }}</span></td>
-              <td class="muted">{{ v.updated_at[:19].replace('T', ' ') if v.updated_at else '' }}</td>
+              <td class="muted">{{ v.started_at[:19].replace('T', ' ') if v.started_at else '' }}</td>
               <td style="white-space: nowrap;">
                 {% if v.status == 'done' %}
                   <a href="{{ url_for('validate_result_view', run_dir=v.run_id) }}">View</a>

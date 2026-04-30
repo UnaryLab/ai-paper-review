@@ -46,6 +46,12 @@
       <tr><th>Last update</th><td class="muted" id="updated-cell">{{ job.updated_at[:19].replace('T', ' ') }}</td></tr>
     </table>
 
+    <!-- Per-chunk progress (shown during the aligning stage) -->
+    <div id="chunk-progress" style="display:none; margin-top: 1.5rem;">
+      <h3>Alignment chunks</h3>
+      <div id="chunk-list"></div>
+    </div>
+
     <details id="error-details" style="display:none; margin-top: 1rem;">
       <summary>Error trace</summary>
       <pre id="error-trace"></pre>
@@ -59,18 +65,54 @@
   const pollUrl = "{{ url_for('validate_poll', run_id=run_id) }}";
   const resultUrl = "{{ url_for('validate_result_view', run_dir=run_id) }}";
 
-  // Validation is stage-based (single batch LLM call for alignment), so
-  // progress is a coarse step percentage keyed off the current status.
+  // Stage base percentages. The aligning stage interpolates within
+  // [ALIGNING_START, ALIGNING_END] using chunks_done / n_chunks.
   const STAGE_PCT = {
     queued:     2,
-    converting: 15,   // human review LLM conversion (if needed)
-    loading:    30,   // parsing files
-    aligning:   60,   // one long batch LLM call — sits here until done
+    converting: 15,
+    loading:    30,
     computing:  88,
     writing:    95,
     done:      100,
     error:      0,
   };
+  const ALIGNING_START = 35;
+  const ALIGNING_END   = 85;
+
+  function renderChunkList(j) {
+    const section = document.getElementById("chunk-progress");
+    const list    = document.getElementById("chunk-list");
+    if (j.status !== "aligning" || !j.n_chunks) {
+      section.style.display = "none";
+      return;
+    }
+    section.style.display = "block";
+
+    const doneSet = new Set(j.completed_chunk_indices || []);
+    const labels  = j.chunk_labels || [];
+    let html = "";
+    for (let ci = 0; ci < j.n_chunks; ci++) {
+      const info  = labels[ci] || {};
+      const label = info.label || `Chunk ${ci + 1}`;
+      const range = (info.row_start && info.row_end)
+        ? ` <span class="muted" style="font-size:0.85rem;">comments ${info.row_start}–${info.row_end}</span>`
+        : "";
+      if (doneSet.has(ci)) {
+        html += `<div class="reviewer-row reviewer-done">
+          <span class="reviewer-icon">✓</span>
+          <span class="reviewer-label">${label}${range}</span>
+          <span class="reviewer-comments">done</span>
+        </div>`;
+      } else {
+        html += `<div class="reviewer-row reviewer-active">
+          <span class="reviewer-icon spinner">⟳</span>
+          <span class="reviewer-label">${label}${range}</span>
+          <span class="reviewer-comments">running…</span>
+        </div>`;
+      }
+    }
+    list.innerHTML = html;
+  }
 
   async function poll() {
     try {
@@ -82,13 +124,23 @@
       document.getElementById("status-pill").className = "pill pill-" + j.status;
       document.getElementById("status-message").textContent = j.message || "";
 
-      const pct = STAGE_PCT[j.status] || 0;
+      let pct;
+      if (j.status === "aligning") {
+        const done  = j.chunks_done || 0;
+        const total = j.n_chunks    || 1;
+        const frac  = total > 0 ? done / total : 0;
+        pct = ALIGNING_START + Math.round(frac * (ALIGNING_END - ALIGNING_START));
+      } else {
+        pct = STAGE_PCT[j.status] || 0;
+      }
       document.getElementById("progress-bar").style.width = pct + "%";
 
       if (j.updated_at) {
         document.getElementById("updated-cell").textContent =
           j.updated_at.slice(0,19).replace("T"," ");
       }
+
+      renderChunkList(j);
 
       if (j.status === "done") {
         window.location.href = resultUrl;

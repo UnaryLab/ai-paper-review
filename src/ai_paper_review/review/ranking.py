@@ -76,7 +76,7 @@ def node_format_report(state):
         "> MarkItDown). Expect the reviews to focus on methodology description, claims,\n"
         "> experimental design, evaluation setup, and writing quality.\n\n"
     )
-    lines.append(f"**Paper:** {paper['title']}\n\n")
+    lines.append(f"**Title:** {paper['title']}\n\n")
     lines.append(f"**Abstract:** {paper['abstract'][:800]}...\n\n")
     lines.append("---\n\n## Selected Reviewers\n")
     lines.append("| ID | Domain | Persona | Selection Relevance |\n|---|---|---|---|\n")

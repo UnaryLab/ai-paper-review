@@ -11,6 +11,7 @@ import json
 import threading
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 from flask import request
@@ -44,6 +45,18 @@ def _is_review_dir_name(name: str) -> bool:
 
 def _is_validation_dir_name(name: str) -> bool:
     return name.startswith(_VALIDATION_DIR_PREFIX)
+
+
+def _run_name(primary_filename: str, provider: str, model: str, launched_at: str) -> str:
+    """Build a human-readable run identifier.
+
+    Format: ``<stem>-<provider>-<model>-<YYYYMMDD-HHMMSS>``
+    """
+    stem = Path(primary_filename or "unknown").stem
+    ts = (launched_at or "")[:19]          # '2026-04-30T10:30:00'
+    ts = ts.replace("-", "").replace("T", "-").replace(":", "")  # '20260430-103000'
+    safe_model = (model or "unknown").replace("/", "-")
+    return f"{stem}-{provider}-{safe_model}-{ts}"
 
 
 def _safe_upload_name(raw_name: Optional[str], default_ext: str = "") -> str:
@@ -110,10 +123,16 @@ def _rehydrate_jobs_from_disk() -> int:
 
         paper_title = ""
         n_issues = 0
+        provider = ""
+        model = ""
+        launched_at = ""
         try:
             ui_state = json.loads(ui_state_json.read_text())
             paper_title = ui_state.get("paper", {}).get("title", "")
             n_issues = len(ui_state.get("ranked_clusters", []))
+            provider = ui_state.get("llm_provider", "")
+            model = ui_state.get("llm_model", "")
+            launched_at = ui_state.get("launched_at", "")
         except Exception as e:
             logger.warning("Could not parse %s: %s", ui_state_json, e)
 
@@ -122,6 +141,9 @@ def _rehydrate_jobs_from_disk() -> int:
             "message": f"Review complete: {n_issues} ranked issues",
             "filename": filename,
             "paper_title": paper_title,
+            "provider": provider,
+            "model": model,
+            "started_at": launched_at or mtime,
             "job_dir": str(entry),
             "report_md": str(report_md),
             "review_data_md": str(review_data_md),

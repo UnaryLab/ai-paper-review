@@ -1,9 +1,10 @@
 {% extends "base.html" %}
-{% block title %}Review: {{ data.paper.title[:60] }}{% endblock %}
+{% block title %}{{ data.review_name }}{% endblock %}
 {% block content %}
   <section>
     <p class="muted"><a href="{{ url_for('review_launcher') }}">← Back to review</a></p>
-    <h1>{{ data.paper.title }}</h1>
+    <h1>{{ data.review_name }}</h1>
+    <p class="muted" style="margin: 0.2rem 0 0.8rem 0; font-size: 1rem;">{{ data.paper.title }}</p>
     <p class="muted" style="border-left: 3px solid var(--warn); padding: 0.5rem 0.75rem; background: rgba(0,0,0,0.02);">
       <strong>Reminder:</strong> this output is a <strong>draft-polishing aid</strong> — it is not a peer-review
       generator. Most venues have strict policies against using LLMs in assigned reviews. Please use it at your
@@ -92,7 +93,7 @@
     <h2>Selected reviewers</h2>
     <p class="muted">{{ data.selected|length }} reviewers selected by topic similarity, then diversified across personas.</p>
     <table class="rows">
-      <thead><tr><th>ID</th><th>Domain</th><th>Persona</th><th>Selection Relevance</th></tr></thead>
+      <thead><tr><th>ID</th><th>Domain</th><th>Persona</th><th>Selection relevance</th></tr></thead>
       <tbody>
         {% for r in data.selected | sort(attribute='id') %}
           <tr>

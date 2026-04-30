@@ -36,7 +36,7 @@ Validation compares a human review (N comments) against an AI review (M comments
 
 - Human comments: each labeled with its real comment ID (e.g. `Reviewer_qFvT-C1`) — the `id` field from the flattened comment list. When no ID is available the fallback `H{n}` is used.
 - AI comments: each labeled with its real comment ID (e.g. `R042-C3`) from the AI review file.
-- A single batch prompt asking for every `(human_id, ai_id)` pair, with instructions to define three verdicts per row based on the best similarity score:
+- Parallel chunked prompts covering every `(human_id, ai_id)` pair (human comments split into groups of ≤10, each group paired with all AI comments), with instructions to define three verdicts per row based on the best similarity score:
   - **same** — best-match similarity ≥ 0.65
   - **partial** — best-match similarity ≥ 0.35
   - **missed** — best-match similarity < 0.35
@@ -86,7 +86,7 @@ A single markdown file, rendered top-to-bottom for humans. Section order:
 ```markdown
 # Review Validation Report
 
-**Paper:** <title or paper_id>
+**Title:** <title or paper_id>
 **Venue:** <venue or 'n/a'>
 
 ## Semantic Comparison (LLM)

@@ -34,7 +34,7 @@ from ai_paper_review.llm.probing import describe_config, probe_providers
 
 from .app import DEFAULT_DB_PATH, RUNS_DIR, app, logger
 from .databases import REVIEWERS, list_available_databases, resolve_database_path
-from .jobs import JOBS, JOBS_LOCK, _safe_upload_name, _set_job, _timestamped_run_id
+from .jobs import JOBS, JOBS_LOCK, _run_name, _safe_upload_name, _set_job, _timestamped_run_id
 from .run_files import list_run_files
 
 
@@ -145,6 +145,9 @@ def _run_review_job(
         _active_provider = state.get("llm_provider") or _cfg.review_provider
         _active_model = state.get("llm_model") or _cfg.review_model
         _active_base_url = _cfg.resolve_base_url(_active_provider)
+        review_name = _run_name(
+            pdf_path.name, _active_provider, _active_model, launched_at,
+        )
         provenance = format_provenance(
             provider=_active_provider,
             model=_active_model,
@@ -186,7 +189,7 @@ def _run_review_job(
         raw_md_lines = [
             "# AI Review Output",
             "",
-            f"**Paper ID:** {state['paper']['title'][:80]}",
+            f"**Paper ID:** {review_name}",
             f"**Title:** {state['paper']['title']}",
             "",
         ]
@@ -226,6 +229,7 @@ def _run_review_job(
         _n_reviewers_total = state.get("n_reviewers_total", 0)
 
         _ui_state = {
+            "review_name": review_name,
             "paper": {"title": state["paper"]["title"], "abstract": state["paper"]["abstract"]},
             "selected": [
                 {"id": r.id, "domain": r.domain, "persona": r.persona, "score": float(s)}
@@ -274,7 +278,7 @@ def review_launcher():
     with JOBS_LOCK:
         recent = sorted(
             ({"id": k, **v, "id_short": k} for k, v in JOBS.items()),
-            key=lambda j: j.get("created_at", ""),
+            key=lambda j: j.get("started_at", ""),
             reverse=True,
         )
     try:
@@ -376,6 +380,7 @@ def start_review():
         flash(f"Upload failed: file was not saved to {pdf_path}.")
         return redirect(url_for("review_launcher"))
 
+    _now = datetime.now(timezone.utc).isoformat()
     with JOBS_LOCK:
         JOBS[job_id] = {
             "status": "queued",
@@ -388,8 +393,9 @@ def start_review():
             "database": chosen_database_id,
             "database_path": str(db_path),
             "n_reviewers": n_reviewers,
-            "created_at": datetime.now(timezone.utc).isoformat(),
-            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "started_at": _now,
+            "created_at": _now,
+            "updated_at": _now,
         }
 
     t = threading.Thread(

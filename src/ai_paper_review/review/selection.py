@@ -202,7 +202,7 @@ def format_selection_similarities_md(
 
     out: List[str] = []
     out.append("# Reviewer Selection Similarities\n\n")
-    out.append(f"**Paper:** {paper.get('title', '(untitled)')}\n\n")
+    out.append(f"**Title:** {paper.get('title', '(untitled)')}\n\n")
     out.append(f"**Reviewers requested (N):** {n_requested}\n\n")
     out.append(f"**Reviewers in database:** {n_total}\n\n")
     out.append(

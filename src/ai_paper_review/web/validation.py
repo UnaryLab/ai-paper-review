@@ -35,6 +35,7 @@ from .jobs import (
     VALIDATE_JOBS,
     VALIDATE_JOBS_LOCK,
     _is_validation_dir_name,
+    _run_name,
     _safe_upload_name,
     _set_validate_job,
     _timestamped_run_id,
@@ -63,6 +64,17 @@ def _run_validate_job(
             raw_md = actual_in.read_text()
             already_structured = bool(re.search(r"^##+\s*Comment\s", raw_md,
                                                 re.MULTILINE))
+
+        # Resolve the paper title from the linked AI review job (if any) so
+        # actual_converted.md gets the correct title rather than "Unknown".
+        _paper_title_for_converted = actual_in.stem  # fallback: filename stem
+        if ai_job_id:
+            with JOBS_LOCK:
+                _linked_ai_job = JOBS.get(ai_job_id)
+            if _linked_ai_job:
+                _paper_title_for_converted = (
+                    _linked_ai_job.get("paper_title") or actual_in.stem
+                )
 
         if is_md and already_structured:
             _set_validate_job(run_id, status="loading",
@@ -93,7 +105,7 @@ def _run_validate_job(
             md_lines = [
                 "# Converted Reviews", "",
                 f"**Paper ID:** {actual_in.stem}",
-                "**Title:** Unknown",
+                f"**Title:** {_paper_title_for_converted}",
                 f"**Notes:** Converted from {actual_in.name} via web UI "
                 f"(LLM, input was {'markdown' if is_md else 'text'}).",
                 "",
@@ -127,11 +139,25 @@ def _run_validate_job(
         n_human = len(actual["flat_comments"])
         n_ai = len(ai_report["flat_comments"])
         total_pairs = n_human * n_ai
+        import math as _math
+        n_chunks_est = max(1, _math.ceil(n_human / 10))
+        # Pre-build chunk label list: [{label, row_start, row_end}] for UI.
+        _CHUNK_SIZE = 10
+        chunk_labels = [
+            {
+                "label": f"Chunk {ci + 1}",
+                "row_start": ci * _CHUNK_SIZE + 1,
+                "row_end": min((ci + 1) * _CHUNK_SIZE, n_human),
+            }
+            for ci in range(n_chunks_est)
+        ]
         _set_validate_job(
             run_id, status="aligning",
-            message=(f"Aligning {n_human} human × {n_ai} AI = {total_pairs} "
-                     f"pairs in one batch LLM call"),
+            message=(f"Aligning {n_human} human × {n_ai} AI = {total_pairs} pairs "
+                     f"across {n_chunks_est} parallel chunk{'s' if n_chunks_est != 1 else ''}…"),
             n_human=n_human, n_ai=n_ai, total_pairs=total_pairs,
+            n_chunks=n_chunks_est, chunks_done=0,
+            chunk_labels=chunk_labels, completed_chunk_indices=[],
         )
 
         cfg = load_config()
@@ -142,10 +168,23 @@ def _run_validate_job(
         logger.info("Validation using LLM: provider=%s model=%s",
                     val_provider, val_model)
 
+        _completed_indices: list = []
+
+        def _chunk_progress(done: int, total: int, ci: int) -> None:
+            _completed_indices.append(ci)
+            _set_validate_job(
+                run_id,
+                chunks_done=done, n_chunks=total,
+                completed_chunk_indices=list(_completed_indices),
+                message=(f"Aligning {n_human} human × {n_ai} AI — "
+                         f"chunk {done}/{total} done…"),
+            )
+
         alignment = align_comments(
             actual["flat_comments"], ai_report["flat_comments"],
             llm_client,
             run_dir=run_dir,
+            on_chunk_done=_chunk_progress,
         )
 
         _set_validate_job(run_id, status="computing",
@@ -192,7 +231,11 @@ def _run_validate_job(
             ),
         }, indent=2, default=str))
 
+        validation_name = _run_name(
+            actual_filename, val_provider, val_model, launched_at,
+        )
         ui_state = {
+            "validation_name": validation_name,
             "metrics": metrics,
             "alignment": alignment,
             "calibration": calibration,
@@ -245,13 +288,21 @@ def validate_form():
     with JOBS_LOCK:
         for jid, job in JOBS.items():
             if job.get("status") == "done" and job.get("review_data_md"):
+                filename = job.get("filename") or ""
+                pdf_stem = Path(filename).stem if filename else jid
+                provider = job.get("provider") or job.get("llm_provider") or ""
+                model    = job.get("model") or job.get("llm_model") or ""
+                parts = [pdf_stem]
+                if provider:
+                    parts.append(provider)
+                if model:
+                    parts.append(model)
                 past_reviews.append({
                     "job_id": jid,
-                    "filename": job.get("filename", "?"),
-                    "title": job.get("paper_title", "?"),
-                    "created_at": job.get("created_at", ""),
+                    "label": "-".join(parts),
+                    "started_at": job.get("started_at") or job.get("created_at", ""),
                 })
-    past_reviews.sort(key=lambda p: p.get("created_at", ""), reverse=True)
+    past_reviews.sort(key=lambda p: p.get("started_at", ""), reverse=True)
     try:
         llm_status = describe_config()
         providers = probe_providers()
@@ -437,6 +488,7 @@ def validate_result_view(run_dir: str):
 
     return render_template(
         "validation_result.html",
+        validation_name=state.get("validation_name", "Validation report"),
         metrics=state.get("metrics", {}),
         alignment=state.get("alignment", {}),
         calibration=state.get("calibration", {}),
@@ -532,6 +584,7 @@ def list_validations() -> List[Dict[str, Any]]:
             "actual_filename": job.get("actual_filename") or "?",
             "ai_filename": job.get("ai_filename") or "?",
             "status": job.get("status", "queued"),
+            "started_at": job.get("created_at") or "",
             "updated_at": job.get("updated_at") or job.get("created_at") or "",
         }
 
@@ -558,9 +611,10 @@ def list_validations() -> List[Dict[str, Any]]:
                 # disk-only rows are always done — _ui_state.json is
                 # written only on successful completion.
                 "status": "done",
+                "started_at": state.get("launched_at") or state.get("created_at") or "",
                 "updated_at": state.get("created_at") or "",
             }
 
     out = list(rows.values())
-    out.sort(key=lambda d: d["updated_at"], reverse=True)
+    out.sort(key=lambda d: d.get("started_at", ""), reverse=True)
     return out

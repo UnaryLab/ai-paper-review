@@ -153,7 +153,7 @@ def test_validation_report_body_omits_provenance_fields():
     assert "**Launched:**" not in md
     assert "**Ended:**" not in md
     # Original header fields still there.
-    assert "**Paper:** Test Paper" in md
+    assert "**Title:** Test Paper" in md
     assert "**Venue:** TestConf" in md
 
 

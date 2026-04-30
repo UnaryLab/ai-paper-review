@@ -161,14 +161,14 @@
     <h2>Recent reviews</h2>
     {% if recent_jobs %}
       <table class="rows">
-        <thead><tr><th>Run</th><th>PDF file</th><th>Status</th><th>Updated</th><th></th></tr></thead>
+        <thead><tr><th>Run</th><th>PDF file</th><th>Status</th><th>Started</th><th></th></tr></thead>
         <tbody>
           {% for j in recent_jobs %}
             <tr>
               <td><code>{{ j.id_short }}</code></td>
               <td>{{ j.filename or '—' }}</td>
               <td><span class="pill pill-{{ j.status }}">{{ j.status }}</span></td>
-              <td class="muted">{{ j.updated_at[:19].replace('T', ' ') if j.updated_at else '' }}</td>
+              <td class="muted">{{ j.started_at[:19].replace('T', ' ') if j.started_at else '' }}</td>
               <td>
                 {% if j.status == 'done' %}
                   <a href="{{ url_for('review_result', job_id=j.id) }}">View</a>

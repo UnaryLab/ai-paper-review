@@ -1,13 +1,18 @@
 {% extends "base.html" %}
-{% block title %}Validation result{% endblock %}
+{% block title %}{{ validation_name }}{% endblock %}
 {% block content %}
   <section>
     <p class="muted"><a href="{{ url_for('validate_form') }}">← Back to validation</a></p>
-    <h1>Validation report</h1>
+    <h1>{{ validation_name }}</h1>
     <p class="lede">Comparing {{ alignment.n_actual }} human comment{{ 's' if alignment.n_actual != 1 }} against {{ alignment.n_ai }} AI comment{{ 's' if alignment.n_ai != 1 }}.</p>
     <div class="download-row">
       <a class="button" href="{{ url_for('validate_download', run_dir=run_dir_name, fname='validation_report.md') }}">Download report (.md)</a>
       <a class="button" href="{{ url_for('validate_download', run_dir=run_dir_name, fname='calibration_delta.json') }}">Download calibration delta (.json)</a>
+      <form method="post" action="{{ url_for('validate_delete', run_dir=run_dir_name) }}"
+            style="display:inline;"
+            onsubmit="return confirm('Delete this validation? Files will be removed from disk and cannot be recovered.');">
+        <button type="submit" class="button button-danger" title="Delete this validation and its files">Delete validation</button>
+      </form>
     </div>
     {% if llm_provider and llm_model %}
       <p class="muted" style="margin-top: 0.8rem; font-size: 0.9rem;">
@@ -27,7 +32,7 @@
       <ul class="download-list">
         <li><a href="{{ url_for('validate_download', run_dir=run_dir_name, fname='actual_raw_llm.md') }}">actual_raw_llm.md</a> — verbatim LLM output from the human-review conversion step, before parsing</li>
         <li><a href="{{ url_for('validate_download', run_dir=run_dir_name, fname='actual_converted.md') }}">actual_converted.md</a> — the parsed and normalized human review in AI-review markdown format</li>
-        <li><a href="{{ url_for('validate_download', run_dir=run_dir_name, fname='alignment_llm_analysis.md') }}">alignment_llm_analysis.md</a> — verbatim LLM response from the single batch-similarity call (the raw analysis)</li>
+        <li><a href="{{ url_for('validate_download', run_dir=run_dir_name, fname='alignment_llm_analysis.md') }}">alignment_llm_analysis.md</a> — verbatim LLM responses from the parallel chunked similarity calls (one section per chunk)</li>
         <li><a href="{{ url_for('validate_download', run_dir=run_dir_name, fname='alignment_similarities.md') }}">alignment_similarities.md</a> — N × M similarity matrix parsed from the LLM response, with per-row verdict</li>
         <li><a href="{{ url_for('validate_download', run_dir=run_dir_name, fname='alignment_ranking.md') }}">alignment_ranking.md</a> — human comments sorted by best-match similarity, highest first</li>
       </ul>

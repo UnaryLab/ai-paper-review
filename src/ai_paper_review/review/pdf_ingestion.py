@@ -89,12 +89,84 @@ def extract_pdf_for_provider(pdf_path: str | Path, provider: str) -> str:
     return extract_pdf_text(pdf_path)
 
 
+def extract_paper_summary_llm(text: str, llm_client) -> Dict[str, str]:
+    """Use the LLM to extract title and abstract from the paper text.
+
+    Sends the first ~4 000 chars to the LLM and parses a two-line
+    response of the form::
+
+        Title: <exact title>
+        Abstract: <full abstract>
+
+    Falls back to :func:`extract_paper_summary` if the call fails or
+    the response cannot be parsed into both fields.
+    """
+    head = text[:4000]
+    system = (
+        "You are a research paper metadata extractor. "
+        "Extract the exact title and abstract from the paper text the user provides. "
+        "Reply in this exact format and nothing else:\n"
+        "Title: <exact paper title>\n"
+        "Abstract: <full abstract text>"
+    )
+    user = f"Extract the title and abstract:\n\n{head}"
+
+    try:
+        raw = llm_client.complete(system, user, max_tokens=600)
+    except Exception as e:
+        logger.warning(
+            "LLM title/abstract extraction failed (%s: %s); falling back to heuristic.",
+            type(e).__name__, e,
+        )
+        return extract_paper_summary(text)
+
+    # Parse title: first line starting with "Title:"
+    title = ""
+    abstract = ""
+    for line in raw.splitlines():
+        stripped = line.strip()
+        if not title and stripped.lower().startswith("title:"):
+            title = stripped[len("title:"):].strip()
+        elif not abstract and stripped.lower().startswith("abstract:"):
+            abstract = stripped[len("abstract:"):].strip()
+        elif abstract:
+            # continuation lines of the abstract
+            abstract += " " + stripped
+
+    abstract = re.sub(r"\s+", " ", abstract).strip()
+
+    if not title or not abstract:
+        logger.warning(
+            "LLM extraction returned unusable metadata (title=%r abstract_len=%d); "
+            "falling back to heuristic.",
+            title, len(abstract),
+        )
+        return extract_paper_summary(text)
+
+    logger.info("LLM extracted title: %s", title[:80])
+    return {"title": title, "abstract": abstract, "full_text": text}
+
+
 def extract_paper_summary(text: str) -> Dict[str, str]:
-    """Heuristic extraction of title + abstract from the leading pages."""
+    """Heuristic extraction of title + abstract — used as fallback only.
+
+    Called when the LLM extraction in :func:`extract_paper_summary_llm`
+    fails or returns an unparseable response.
+    """
     head = text[:6000]
     lines = [ln.strip() for ln in head.splitlines() if ln.strip()]
 
-    title = lines[0] if lines else "Unknown Title"
+    # Skip bare numbers — some PDFs emit margin line-numbers (1, 2, 3 …)
+    # as the very first lines, which would otherwise become the "title".
+    # Also skip fragments shorter than 8 chars (single letters, symbols).
+    title = "Unknown Title"
+    for ln in lines:
+        if re.fullmatch(r"\d+", ln):
+            continue
+        if len(ln) < 8:
+            continue
+        title = ln
+        break
 
     abstract = ""
     m = re.search(

@@ -145,7 +145,7 @@ def format_clustering_similarities_md(
 
     out: List[str] = []
     out.append("# Clustering Similarities\n\n")
-    out.append(f"**Paper:** {paper.get('title', '(untitled)')}\n\n")
+    out.append(f"**Title:** {paper.get('title', '(untitled)')}\n\n")
     out.append(f"**Comments clustered:** {n}\n\n")
     out.append(f"**Similarity threshold:** {threshold:.3f} "
                "(env: `CLUSTER_THRESHOLD`)\n\n")

@@ -34,7 +34,7 @@ from .constants import (
     RECOMMENDED_MIN_N_REVIEWERS,
 )
 from .parsing import review_dict_to_markdown
-from .pdf_ingestion import extract_paper_summary, extract_pdf_for_provider
+from .pdf_ingestion import extract_paper_summary_llm, extract_pdf_for_provider
 from .ranking import node_format_report, node_rank_clusters
 from .reviewer_db import Reviewer
 from .reviewer_dispatching import node_run_reviewers
@@ -82,13 +82,15 @@ class ReviewState(TypedDict, total=False):
 
 def node_ingest_pdf(state: ReviewState) -> ReviewState:
     from ai_paper_review.llm.config import load_config
+    from ai_paper_review.llm.factory import make_client
 
     logger.info("Ingesting PDF: %s", state["pdf_path"])
     cfg = load_config()
     provider = state.get("llm_provider") or cfg.review_provider
 
     text = extract_pdf_for_provider(state["pdf_path"], provider)
-    state["paper"] = extract_paper_summary(text)
+    llm_client = make_client(cfg, use_case="review")
+    state["paper"] = extract_paper_summary_llm(text, llm_client)
     logger.info("Extracted title: %s", state["paper"]["title"][:80])
     return state
 

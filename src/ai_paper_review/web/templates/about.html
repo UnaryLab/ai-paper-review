@@ -138,7 +138,7 @@
             issues, and where it false-alarms. The validator converts the
             human review into the same structured format the AI pipeline
             uses, then asks the LLM for a similarity score between every
-            (human comment, AI comment) pair in a single batch call, and
+            (human comment, AI comment) pair across parallel chunked calls, and
             derives hit / partial / miss verdicts from the resulting
             matrix. Use the report to hand-tune the reviewer database
             over multiple papers.

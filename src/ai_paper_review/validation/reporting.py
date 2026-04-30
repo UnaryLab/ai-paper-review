@@ -48,7 +48,7 @@ def format_report(
     category_to_persona = tables.category_to_persona if tables else {}
     out: List[str] = []
     out.append("# Review Validation Report\n\n")
-    out.append(f"**Paper:** {actual.get('title', actual.get('paper_id', 'unknown'))}\n\n")
+    out.append(f"**Title:** {actual.get('title', actual.get('paper_id', 'unknown'))}\n\n")
     out.append(f"**Venue:** {actual.get('venue', 'n/a')}\n\n")
 
     # --- LLM semantic comparison (new) ---

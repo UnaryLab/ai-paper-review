@@ -24,8 +24,8 @@ from __future__ import annotations
 import logging
 import pathlib
 import re
-from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Dict, List, Optional, Tuple
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -237,6 +237,7 @@ def align_comments_batch_llm(
     llm_client: Any,
     max_comments_per_side: int = 120,
     run_dir: Optional[Any] = None,
+    on_chunk_done: Optional[Callable[[int, int, int], None]] = None,
 ) -> Dict[str, Any]:
     """Align human comments to AI comments using parallel chunked LLM calls.
 
@@ -246,7 +247,7 @@ def align_comments_batch_llm(
     similarity matrix before computing hits/misses/false-alarms.
 
     Running chunks in parallel avoids per-request output-token limits that
-    large single-batch calls hit on subscription-tier providers.
+    large single-chunk calls hit on subscription-tier providers.
 
     Returns the same dict shape downstream consumers (metrics,
     calibration, report) expect — see module docstring for details.
@@ -297,19 +298,28 @@ def align_comments_batch_llm(
         getattr(llm_client, "model", "?"),
     )
 
-    # Fan out: one parallel LLM call per chunk. futures preserve chunk order.
+    # Fan out: one parallel LLM call per chunk.
+    # Use as_completed so on_chunk_done fires as each chunk finishes,
+    # enabling live progress reporting without waiting for the slowest.
     with ThreadPoolExecutor(max_workers=n_chunks) as pool:
-        futures = [
+        future_to_ci = {
             pool.submit(
                 _call_single_chunk,
                 chunk, ai_slice, ai_ids, ai_block,
                 llm_client, system_prompt, ci,
-            )
+            ): ci
             for ci, chunk in enumerate(chunks)
-        ]
-        chunk_results: List[Tuple[np.ndarray, str, int, str]] = [
-            f.result() for f in futures
-        ]
+        }
+        # Preserve chunk order for matrix assembly.
+        chunk_results: List[Optional[Tuple[np.ndarray, str, int, str]]] = \
+            [None] * n_chunks
+        chunks_done = 0
+        for fut in as_completed(future_to_ci):
+            ci = future_to_ci[fut]
+            chunk_results[ci] = fut.result()
+            chunks_done += 1
+            if on_chunk_done:
+                on_chunk_done(chunks_done, n_chunks, ci)
 
     # Assemble full N×M matrix row-by-row from each chunk's sub-matrix.
     sims = np.zeros((len(actual_slice), len(ai_slice)), dtype=np.float32)
@@ -620,8 +630,9 @@ def align_comments(
     llm_client: Any,
     max_comments_per_side: int = 120,
     run_dir: Optional[Any] = None,
+    on_chunk_done: Optional[Callable[[int, int, int], None]] = None,
 ) -> Dict[str, Any]:
-    """Align human comments to AI comments via a single batch LLM call.
+    """Align human comments to AI comments via parallel chunked LLM calls.
 
     Thin wrapper over :func:`align_comments_batch_llm`. There is no
     embedding fallback — if the LLM call fails or returns an unusable
@@ -632,4 +643,5 @@ def align_comments(
         actual, ai, llm_client,
         max_comments_per_side=max_comments_per_side,
         run_dir=run_dir,
+        on_chunk_done=on_chunk_done,
     )

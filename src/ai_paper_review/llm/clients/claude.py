@@ -100,6 +100,12 @@ class ClaudeSDKClient:
         else:
             prompt = user
 
+        # The SDK's JSON transport buffer defaults to 1 MB. Large PDF tool
+        # results or long responses exceed that limit and raise a buffer
+        # overflow error. Raise the ceiling to 32 MB — enough for any
+        # realistic review response or PDF read-tool result.
+        options_kwargs["max_buffer_size"] = 32 * 1024 * 1024
+
         options = ClaudeAgentOptions(**options_kwargs)
 
         chunks: list[str] = []

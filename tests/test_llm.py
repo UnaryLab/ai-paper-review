@@ -1057,7 +1057,7 @@ def test_node_format_report_stashes_retry_counts_and_ended_at(isolated_config):
     assert out_state["ended_at"]  # non-empty ISO8601 string
 
     # Body still carries paper metadata + reviewer sections.
-    assert "**Paper:** Sample" in md
+    assert "**Title:** Sample" in md
     assert "## Selected Reviewers" in md
 
 

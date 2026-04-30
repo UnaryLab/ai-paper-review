@@ -228,9 +228,9 @@ def test_batch_llm_alignment_builds_matches_from_similarity_matrix():
 
     alignment = align_comments(actual, ai, FakeClient())
 
-    # One single LLM call for the whole matrix — NOT 15
+    # 3 human comments fit in one chunk (≤10), so exactly 1 LLM call.
     assert len(FakeClient.calls) == 1, \
-        f"expected 1 batch call, got {len(FakeClient.calls)}"
+        f"expected 1 chunk call, got {len(FakeClient.calls)}"
 
     hit_by_h = {h["actual"]["id"]: h for h in alignment["hits"]}
     assert "H1" in hit_by_h and "H2" in hit_by_h
@@ -252,7 +252,7 @@ def test_batch_llm_alignment_builds_matches_from_similarity_matrix():
 
 
 def test_align_raises_on_llm_error():
-    """When the batch LLM call fails, align_comments raises — there is no
+    """When a chunked LLM call fails, align_comments raises — there is no
     embedding fallback, and callers need to see the underlying error."""
     import pytest
     from ai_paper_review.validation.alignment import align_comments
