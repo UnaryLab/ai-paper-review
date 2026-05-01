@@ -234,7 +234,7 @@ def test_rehydrate_picks_up_completed_review_on_startup(tmp_path, monkeypatch):
         '{"paper":{"title":"Testing Paper","abstract":""},"selected":[],"ranked_clusters":[{"x":1},{"y":2}]}'
     )
 
-    # Also seed a validation_ dir and an incomplete review dir — both must be ignored
+    # Also seed a validation_ dir and an incomplete review dir
     (runs / "validation_20260101_120001_bbb").mkdir()
     (runs / "validation_20260101_120001_bbb" / "validation_report.md").write_text("ignore me")
     incomplete = runs / "review_20260101_120002_ccc"
@@ -258,10 +258,11 @@ def test_rehydrate_picks_up_completed_review_on_startup(tmp_path, monkeypatch):
     assert entry["n_issues"] == 2
     assert entry["paper_title"] == "Testing Paper"
 
-    # Validation dir skipped
+    # Validation dir not loaded into review JOBS
     assert "validation_20260101_120001_bbb" not in fresh_jobs.JOBS
-    # Incomplete review skipped
-    assert "review_20260101_120002_ccc" not in fresh_jobs.JOBS
+    # Incomplete review rehydrated as error so it can be deleted from the UI
+    assert "review_20260101_120002_ccc" in fresh_jobs.JOBS
+    assert fresh_jobs.JOBS["review_20260101_120002_ccc"]["status"] == "error"
 
 
 def test_list_available_databases_includes_default(tmp_path, monkeypatch):
