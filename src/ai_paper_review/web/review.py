@@ -261,6 +261,32 @@ def _run_review_job(
         logger.exception("Review job %s failed", job_id)
         _set_job(job_id, status="error", message=f"{type(e).__name__}: {e}",
                  traceback=traceback.format_exc())
+        # Write a minimal _ui_state.json even on error so the run directory
+        # is discoverable after a server restart and can be deleted from the UI.
+        try:
+            _locs = locals()
+            _err_state = {
+                "review_name": _locs.get("review_name") or job_id,
+                "status": "error",
+                "error": f"{type(e).__name__}: {e}",
+                "paper": {"title": "", "abstract": ""},
+                "selected": [],
+                "ranked_clusters": [],
+                "clarity_review": {},
+                "n_format_repairs": 0,
+                "n_reviewers_total": 0,
+                "llm_provider": _locs.get("_active_provider") or provider or "",
+                "llm_model": _locs.get("_active_model") or model or "",
+                "llm_base_url": str(_locs.get("_active_base_url") or ""),
+                "launched_at": launched_at,
+                "ended_at": "",
+            }
+            (job_dir / "_ui_state.json").write_text(
+                json.dumps(_err_state, indent=2, default=str)
+            )
+        except Exception as write_err:
+            logger.warning("Could not write error _ui_state.json for %s: %s",
+                           job_id, write_err)
 
 
 @app.route("/")

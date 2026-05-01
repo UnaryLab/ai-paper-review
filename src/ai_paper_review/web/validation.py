@@ -284,6 +284,36 @@ def _run_validate_job(
             message=f"{type(e).__name__}: {e}",
             traceback=_tb.format_exc(),
         )
+        # Write a minimal _ui_state.json even on error so the run directory
+        # is discoverable after a server restart and can be deleted from the UI.
+        try:
+            _err_state = {
+                "validation_name": locals().get("validation_name") or run_id,
+                "paper_title": locals().get("paper_title") or "",
+                "status": "error",
+                "error": f"{type(e).__name__}: {e}",
+                "metrics": {},
+                "alignment": {},
+                "calibration": {},
+                "actual_meta": {},
+                "actual_filename": actual_filename,
+                "ai_filename": ai_filename or "",
+                "ai_review_source_path": "",
+                "actual_source_path": str(actual_in) if actual_in else "",
+                "run_dir_name": run_dir.name,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "llm_provider": locals().get("val_provider") or "",
+                "llm_model": locals().get("val_model") or "",
+                "llm_base_url": locals().get("val_base_url") or "",
+                "launched_at": launched_at,
+                "ended_at": datetime.now(timezone.utc).isoformat(),
+            }
+            (run_dir / "_ui_state.json").write_text(
+                json.dumps(_err_state, indent=2, default=str)
+            )
+        except Exception as write_err:
+            logger.warning("Could not write error _ui_state.json for %s: %s",
+                           run_id, write_err)
 
 
 @app.get("/validation")
@@ -626,9 +656,7 @@ def list_validations() -> List[Dict[str, Any]]:
                 "run_id": entry.name,
                 "actual_filename": state.get("actual_filename") or "?",
                 "ai_filename": ai_filename,
-                # disk-only rows are always done — _ui_state.json is
-                # written only on successful completion.
-                "status": "done",
+                "status": state.get("status") or "done",
                 "started_at": state.get("launched_at") or state.get("created_at") or "",
                 "updated_at": state.get("created_at") or "",
             }

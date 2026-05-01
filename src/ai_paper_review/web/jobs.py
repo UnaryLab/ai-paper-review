@@ -110,13 +110,10 @@ def _rehydrate_jobs_from_disk() -> int:
         review_data_md = entry / "review_data.md"
         ui_state_json = entry / "_ui_state.json"
 
-        # Completed reviews have all three. Errored/partial runs are
-        # rehydrated as status="error" so they appear in the list with a
-        # delete button and their directories can be cleaned up.
-        is_complete = (report_md.exists()
-                       and review_data_md.exists()
-                       and ui_state_json.exists())
-        if not is_complete:
+        # _ui_state.json is written on both success and error (since the
+        # worker now writes a minimal error state on failure). If it's
+        # missing the run crashed before even that — treat as error.
+        if not ui_state_json.exists():
             mtime_err = datetime.fromtimestamp(
                 entry.stat().st_mtime, tz=timezone.utc
             ).isoformat()
@@ -139,8 +136,12 @@ def _rehydrate_jobs_from_disk() -> int:
         pdf_files = list(entry.glob("*.pdf"))
         filename = pdf_files[0].name if pdf_files else "(restored)"
 
-        mtime = datetime.fromtimestamp(report_md.stat().st_mtime, tz=timezone.utc).isoformat()
+        mtime = datetime.fromtimestamp(
+            ui_state_json.stat().st_mtime, tz=timezone.utc
+        ).isoformat()
 
+        run_status = "done"
+        run_message = ""
         paper_title = ""
         n_issues = 0
         provider = ""
@@ -148,6 +149,8 @@ def _rehydrate_jobs_from_disk() -> int:
         launched_at = ""
         try:
             ui_state = json.loads(ui_state_json.read_text())
+            run_status = ui_state.get("status") or "done"
+            run_message = ui_state.get("error", "")
             paper_title = ui_state.get("paper", {}).get("title", "")
             n_issues = len(ui_state.get("ranked_clusters", []))
             provider = ui_state.get("llm_provider", "")
@@ -157,8 +160,10 @@ def _rehydrate_jobs_from_disk() -> int:
             logger.warning("Could not parse %s: %s", ui_state_json, e)
 
         JOBS[entry.name] = {
-            "status": "done",
-            "message": f"Review complete: {n_issues} ranked issues",
+            "status": run_status,
+            "message": (f"Review complete: {n_issues} ranked issues"
+                        if run_status == "done"
+                        else (run_message or "Run failed")),
             "filename": filename,
             "paper_title": paper_title,
             "provider": provider,
