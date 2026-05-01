@@ -4,6 +4,7 @@
   <section>
     <p class="muted"><a href="{{ url_for('validate_form') }}">← Back to validation</a></p>
     <h1>{{ validation_name }}</h1>
+    {% if paper_title %}<p class="muted" style="margin: 0.2rem 0 0.8rem 0; font-size: 1rem;">{{ paper_title }}</p>{% endif %}
     <p class="lede">Comparing {{ alignment.n_actual }} human comment{{ 's' if alignment.n_actual != 1 }} against {{ alignment.n_ai }} AI comment{{ 's' if alignment.n_ai != 1 }}.</p>
     <div class="download-row">
       <a class="button" href="{{ url_for('validate_download', run_dir=run_dir_name, fname='validation_report.md') }}">Download report (.md)</a>
@@ -203,7 +204,7 @@
         <div class="issue issue-{{ h.actual.severity }}">
           <header>
             <span class="sev sev-{{ h.actual.severity }}">{{ h.actual.severity|upper }}</span>
-            <strong>{{ h.actual.text[:140] }}{% if h.actual.text|length > 140 %}…{% endif %}</strong>
+            <strong>{{ h.actual.text }}</strong>
           </header>
           <details style="margin-top: 0.4rem;">
             <summary class="hint">
@@ -233,7 +234,7 @@
       <summary><strong>Misses</strong> ({{ alignment.misses|length }}) — human comments the AI failed to raise</summary>
       {% for m in alignment.misses %}
         <div class="issue issue-{{ m.severity }}">
-          <header><span class="sev sev-{{ m.severity }}">{{ m.severity|upper }}</span> <strong>{{ m.text[:200] }}…</strong></header>
+          <header><span class="sev sev-{{ m.severity }}">{{ m.severity|upper }}</span> <strong>{{ m.text }}</strong></header>
           <p class="hint">Category: <code>{{ m.category or 'uncategorized' }}</code> · best AI similarity {{ "%.2f"|format(m.best_sim) }}</p>
         </div>
       {% endfor %}

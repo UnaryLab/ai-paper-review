@@ -110,10 +110,30 @@ def _rehydrate_jobs_from_disk() -> int:
         review_data_md = entry / "review_data.md"
         ui_state_json = entry / "_ui_state.json"
 
-        # Completed reviews have all three; partial/errored runs are
-        # skipped — without the ranked output the result page can't render.
-        if not (report_md.exists() and review_data_md.exists() and ui_state_json.exists()):
-            logger.debug("Skipping incomplete run dir: %s", entry.name)
+        # Completed reviews have all three. Errored/partial runs are
+        # rehydrated as status="error" so they appear in the list with a
+        # delete button and their directories can be cleaned up.
+        is_complete = (report_md.exists()
+                       and review_data_md.exists()
+                       and ui_state_json.exists())
+        if not is_complete:
+            mtime_err = datetime.fromtimestamp(
+                entry.stat().st_mtime, tz=timezone.utc
+            ).isoformat()
+            JOBS[entry.name] = {
+                "status": "error",
+                "message": "Run did not complete (server may have restarted mid-run).",
+                "filename": next(iter(entry.glob("*.pdf")), Path("(unknown)")).name,
+                "paper_title": "",
+                "provider": "",
+                "model": "",
+                "started_at": mtime_err,
+                "job_dir": str(entry),
+                "created_at": mtime_err,
+                "updated_at": mtime_err,
+                "restored": True,
+            }
+            loaded += 1
             continue
 
         pdf_files = list(entry.glob("*.pdf"))

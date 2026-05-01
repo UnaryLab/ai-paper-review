@@ -234,14 +234,18 @@ def _run_validate_job(
         validation_name = _run_name(
             actual_filename, val_provider, val_model, launched_at,
         )
+        # Prefer the AI review's title (set by the LLM extraction pipeline);
+        # fall back to whatever the human-review conversion wrote.
+        paper_title = ai_report.get("title") or actual.get("title") or ""
         ui_state = {
             "validation_name": validation_name,
+            "paper_title": paper_title,
             "metrics": metrics,
             "alignment": alignment,
             "calibration": calibration,
             "actual_meta": {
                 "paper_id": actual.get("paper_id"),
-                "paper_title": actual.get("paper_title"),
+                "paper_title": actual.get("title"),
                 "n_reviews": actual.get("n_reviews"),
                 "flat_comments_count": len(actual.get("flat_comments", [])),
                 "flat_strengths_count": len(actual.get("flat_strengths", [])),
@@ -489,6 +493,7 @@ def validate_result_view(run_dir: str):
     return render_template(
         "validation_result.html",
         validation_name=state.get("validation_name", "Validation report"),
+        paper_title=state.get("paper_title", ""),
         metrics=state.get("metrics", {}),
         alignment=state.get("alignment", {}),
         calibration=state.get("calibration", {}),
@@ -596,6 +601,19 @@ def list_validations() -> List[Dict[str, Any]]:
                 continue
             state_path = entry / "_ui_state.json"
             if not state_path.exists():
+                # Errored run — no _ui_state.json written. Show it with
+                # status="error" so the user can delete the directory.
+                mtime_err = datetime.fromtimestamp(
+                    entry.stat().st_mtime, tz=timezone.utc
+                ).isoformat()
+                rows[entry.name] = {
+                    "run_id": entry.name,
+                    "actual_filename": "?",
+                    "ai_filename": "?",
+                    "status": "error",
+                    "started_at": mtime_err,
+                    "updated_at": mtime_err,
+                }
                 continue
             try:
                 state = json.loads(state_path.read_text())
