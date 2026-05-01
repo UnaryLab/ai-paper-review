@@ -652,11 +652,19 @@ def list_validations() -> List[Dict[str, Any]]:
             ai_filename = state.get("ai_filename")
             if not ai_filename:
                 ai_filename = _backfill_ai_filename(entry)
+            disk_status = state.get("status") or "done"
+            # Verify required output files exist even when _ui_state.json
+            # claims "done" — they could have been deleted manually.
+            if disk_status == "done" and not (
+                (entry / "validation_report.md").exists()
+                and (entry / "calibration_delta.json").exists()
+            ):
+                disk_status = "error"
             rows[entry.name] = {
                 "run_id": entry.name,
                 "actual_filename": state.get("actual_filename") or "?",
                 "ai_filename": ai_filename,
-                "status": state.get("status") or "done",
+                "status": disk_status,
                 "started_at": state.get("launched_at") or state.get("created_at") or "",
                 "updated_at": state.get("created_at") or "",
             }

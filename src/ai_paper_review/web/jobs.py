@@ -159,6 +159,15 @@ def _rehydrate_jobs_from_disk() -> int:
         except Exception as e:
             logger.warning("Could not parse %s: %s", ui_state_json, e)
 
+        # Even if _ui_state.json claims "done", verify required output
+        # files exist — they could have been deleted manually. Downgrade
+        # to "error" so the result page is never attempted against missing files.
+        if run_status == "done" and not (report_md.exists() and review_data_md.exists()):
+            run_status = "error"
+            run_message = "Output files missing (report or review data not found on disk)."
+            logger.warning("Run %s marked done in _ui_state.json but output files "
+                           "are missing — downgrading to error.", entry.name)
+
         JOBS[entry.name] = {
             "status": run_status,
             "message": (f"Review complete: {n_issues} ranked issues"
