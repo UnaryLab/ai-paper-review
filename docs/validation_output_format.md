@@ -30,13 +30,13 @@ Plus whichever source files the user uploaded (the human review `.txt`/`.md`, an
 
 ## 2. Alignment — parallel chunked LLM calls
 
-Validation compares a human review (N comments) against an AI review (M comments) by asking the LLM for an **N × M similarity matrix**. The N human comments are split into chunks of 10; each chunk is sent as a separate LLM call paired with all M AI comments, and the results are assembled into the full matrix. All chunks run in parallel, so wall-clock time is roughly that of a single call.
+Validation compares a human review (N comments) against an AI review (M comments) by asking the LLM for an **N × M similarity matrix**. The N human comments are split into chunks of 5; each chunk is sent as a separate LLM call paired with all M AI comments, and the results are assembled into the full matrix. All chunks run in parallel, so wall-clock time is roughly that of a single call.
 
 **Inputs to the alignment call:**
 
 - Human comments: each labeled with its real comment ID (e.g. `Reviewer_qFvT-C1`) — the `id` field from the flattened comment list. When no ID is available the fallback `H{n}` is used.
 - AI comments: each labeled with its real comment ID (e.g. `R042-C3`) from the AI review file.
-- Parallel chunked prompts covering every `(human_id, ai_id)` pair (human comments split into groups of ≤10, each group paired with all AI comments), with instructions to define three verdicts per row based on the best similarity score:
+- Parallel chunked prompts covering every `(human_id, ai_id)` pair (human comments split into groups of ≤5, each group paired with all AI comments), with instructions to define three verdicts per row based on the best similarity score:
   - **same** — best-match similarity ≥ 0.65
   - **partial** — best-match similarity ≥ 0.35
   - **missed** — best-match similarity < 0.35
@@ -73,7 +73,7 @@ Three practical reasons:
 
 1. **Cost scales as O(N+M) tokens per chunk, not O(N·M) calls.** A 15-comment human review vs a 40-comment AI review would mean 600 pairwise calls with the old approach.
 2. **The LLM sees every AI comment when scoring each chunk.** It can reason "A7 is the best match" with full context rather than scoring in isolation.
-3. **Chunks keep output-token budgets small.** A single call for a large human review can saturate per-request limits on subscription-tier providers; splitting to ≤10-human chunks avoids that. Parallel execution means wall-clock time stays comparable to a single large call.
+3. **Chunks keep output-token budgets small.** A single call for a large human review can saturate per-request limits on subscription-tier providers; splitting to ≤5-human chunks avoids that. Parallel execution means wall-clock time stays comparable to a single large call.
 
 `alignment_llm_analysis.md` captures all chunk responses and prompts in one file, with `## Chunk N / total (human rows X–Y)` section headers so each chunk is traceable.
 

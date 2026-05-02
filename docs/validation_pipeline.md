@@ -123,9 +123,9 @@ The `calibration_delta.json` output of each run is the input to the separate [Ag
 |---|--------------------------|---------------------------------------|--------------------------------------------------|-----------|
 | 1 | Human-review conversion (optional) | raw human-review text       | structured markdown in the AI-review schema      | 1 (raises on parse failure — no retry) |
 | 2 | Comment loading          | both sides' markdown                  | flat comment lists tagged with reviewer metadata | 0         |
-| 3 | Comment alignment        | human × AI comment grid               | N × M similarity matrix + per-row verdicts (same / partial / missed) + `llm_comparison` summary | **parallel chunks** (one per ≤10-human slice, all M AI comments each) |
+| 3 | Comment alignment        | human × AI comment grid               | N × M similarity matrix + per-row verdicts (same / partial / missed) + `llm_comparison` summary | **parallel chunks** (one per ≤5-human slice, all M AI comments each) |
 | 4 | Metric computation       | alignment output                      | precision / recall / F1 / severity-weighted recall | 0       |
 | 5 | Calibration delta        | alignment + AI report + reviewer DB   | per-persona stats + miss / sub-rating attributions + suggestions | 0 |
 | 6 | Report formatting        | alignment + metrics + calibration + llm_comparison | validation_report.md (up to 10 sections) | 0 |
 
-Only Stages 1 and 3 hit the network. Stage 3 splits the N human comments into chunks of 10, runs one LLM call per chunk (all M AI comments each), and assembles the results into a single N × M matrix. The chunked design keeps each call's output-token budget small enough for subscription-tier providers while still returning the full matrix in one pass — avoiding the O(N·M) per-pair call approach.
+Only Stages 1 and 3 hit the network. Stage 3 splits the N human comments into chunks of 5, runs one LLM call per chunk (all M AI comments each), and assembles the results into a single N × M matrix. The chunked design keeps each call's output-token budget small enough for subscription-tier providers while still returning the full matrix in one pass — avoiding the O(N·M) per-pair call approach.

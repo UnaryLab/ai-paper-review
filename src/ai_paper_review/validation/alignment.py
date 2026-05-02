@@ -40,7 +40,7 @@ logger = logging.getLogger("validator")
 # LLM. Each chunk becomes one parallel call with the full AI comment set.
 # Keeping chunks small avoids per-request output-token limits on
 # subscription-tier providers (e.g. claude_sdk).
-_HUMAN_CHUNK_SIZE = 10
+_HUMAN_CHUNK_SIZE = 5
 
 
 def _fmt_comments_for_prompt(
@@ -243,7 +243,7 @@ def align_comments_batch_llm(
 ) -> Dict[str, Any]:
     """Align human comments to AI comments using parallel chunked LLM calls.
 
-    Human comments are split into chunks of ``_HUMAN_CHUNK_SIZE`` (10).
+    Human comments are split into chunks of ``_HUMAN_CHUNK_SIZE`` (5).
     Each chunk is sent as a separate LLM call paired with the full AI
     comment set, and the results are assembled into a single N×M
     similarity matrix before computing hits/misses/false-alarms.
