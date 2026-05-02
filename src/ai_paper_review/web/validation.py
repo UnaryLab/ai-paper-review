@@ -185,6 +185,7 @@ def _run_validate_job(
             llm_client,
             run_dir=run_dir,
             on_chunk_done=_chunk_progress,
+            chunk_stagger_s=cfg.request_delay,
         )
 
         _set_validate_job(run_id, status="computing",

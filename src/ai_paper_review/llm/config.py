@@ -288,6 +288,13 @@ def load_config(path: Optional[Path] = None) -> LLMConfig:
         retry_base_delay=float(review_section.get("retry_base_delay", 5.0)),
         max_concurrent=int(review_section.get("max_concurrent", 10)),
     )
+    # claude_sdk routes through a subscription-tier CLI and cannot handle
+    # simultaneous parallel requests without hitting rate-limit rejection.
+    # Enforce a minimum 1 s stagger between dispatched calls when no explicit
+    # delay is set, so review and validation chunks don't burst simultaneously.
+    if cfg.review_provider == "claude_sdk" and cfg.request_delay < 1.0:
+        cfg.request_delay = 1.0
+
     if cfg.review_provider not in SUPPORTED_PROVIDERS:
         raise ValueError(
             f"Unsupported review_provider {cfg.review_provider!r}. "

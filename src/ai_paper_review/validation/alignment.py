@@ -24,6 +24,7 @@ from __future__ import annotations
 import logging
 import pathlib
 import re
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -238,6 +239,7 @@ def align_comments_batch_llm(
     max_comments_per_side: int = 120,
     run_dir: Optional[Any] = None,
     on_chunk_done: Optional[Callable[[int, int, int], None]] = None,
+    chunk_stagger_s: float = 0.0,
 ) -> Dict[str, Any]:
     """Align human comments to AI comments using parallel chunked LLM calls.
 
@@ -299,17 +301,27 @@ def align_comments_batch_llm(
     )
 
     # Fan out: one parallel LLM call per chunk.
-    # Use as_completed so on_chunk_done fires as each chunk finishes,
-    # enabling live progress reporting without waiting for the slowest.
-    with ThreadPoolExecutor(max_workers=n_chunks) as pool:
-        future_to_ci = {
-            pool.submit(
+    # chunk_stagger_s > 0 spreads submissions to avoid bursting all requests
+    # simultaneously (needed for claude_sdk which is rate-limited per session).
+    # Chunks still run concurrently — only the *start* times are spread out.
+
+    def _submit_staggered(pool, chunks):
+        futures = {}
+        for ci, chunk in enumerate(chunks):
+            if ci > 0 and chunk_stagger_s > 0:
+                time.sleep(chunk_stagger_s)
+            fut = pool.submit(
                 _call_single_chunk,
                 chunk, ai_slice, ai_ids, ai_block,
                 llm_client, system_prompt, ci,
-            ): ci
-            for ci, chunk in enumerate(chunks)
-        }
+            )
+            futures[fut] = ci
+        return futures
+
+    # Use as_completed so on_chunk_done fires as each chunk finishes,
+    # enabling live progress reporting without waiting for the slowest.
+    with ThreadPoolExecutor(max_workers=n_chunks) as pool:
+        future_to_ci = _submit_staggered(pool, chunks)
         # Preserve chunk order for matrix assembly.
         chunk_results: List[Optional[Tuple[np.ndarray, str, int, str]]] = \
             [None] * n_chunks
@@ -631,6 +643,7 @@ def align_comments(
     max_comments_per_side: int = 120,
     run_dir: Optional[Any] = None,
     on_chunk_done: Optional[Callable[[int, int, int], None]] = None,
+    chunk_stagger_s: float = 0.0,
 ) -> Dict[str, Any]:
     """Align human comments to AI comments via parallel chunked LLM calls.
 
@@ -644,4 +657,5 @@ def align_comments(
         max_comments_per_side=max_comments_per_side,
         run_dir=run_dir,
         on_chunk_done=on_chunk_done,
+        chunk_stagger_s=chunk_stagger_s,
     )

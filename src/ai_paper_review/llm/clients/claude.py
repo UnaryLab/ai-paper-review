@@ -114,6 +114,24 @@ class ClaudeSDKClient:
         try:
             async for message in query(prompt=prompt, options=options):
                 seen_message_types.append(type(message).__name__)
+                # Detect hard rate-limit rejection before falling through to
+                # the empty-response error, which gives a misleading message.
+                rate_info = getattr(message, "rate_limit_info", None)
+                if rate_info is not None:
+                    status = getattr(rate_info, "status", None)
+                    if status == "rejected":
+                        raise RuntimeError(
+                            "Claude Agent SDK rate limit rejected the request "
+                            f"(type={getattr(rate_info, 'rate_limit_type', '?')}). "
+                            "Too many parallel calls — reduce concurrency or wait "
+                            "before retrying."
+                        )
+                    if status == "allowed_warning":
+                        logger.warning(
+                            "ClaudeSDK: rate limit warning "
+                            "(type=%s) — approaching limit.",
+                            getattr(rate_info, "rate_limit_type", "?"),
+                        )
                 content = getattr(message, "content", None)
                 if content is None:
                     continue
