@@ -14,6 +14,20 @@ Two reviewer databases are bundled by default: **Computer Architecture** and **M
 
 ---
 
+## Citation
+If you use this tool in your paper drafting, please cite:
+
+```
+@article{ai-paper-review,
+  author = {Di Wu},
+  title = {Can AI Review Improve Paper Drafting? An Empirical Study on 20 Computer Architecture Submissions},
+  journal = {arXiv preprint},
+  year = {2026}
+}
+```
+
+---
+
 ## Quick start
 
 ```bash
