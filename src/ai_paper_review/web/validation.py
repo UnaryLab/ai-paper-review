@@ -21,7 +21,7 @@ from ai_paper_review.llm.probing import describe_config, probe_providers
 from ai_paper_review.llm.utils import env_vars_for, is_local_provider
 from ai_paper_review.review.parsing import review_dict_to_markdown
 from ai_paper_review.validation import conversion as cr
-from ai_paper_review.validation.alignment import align_comments
+from ai_paper_review.validation.alignment import align_comments, _HUMAN_CHUNK_SIZE
 from ai_paper_review.validation.calibration import build_calibration
 from ai_paper_review.validation.loading import load_actual, load_ai
 from ai_paper_review.validation.metrics import compute_metrics
@@ -140,14 +140,13 @@ def _run_validate_job(
         n_ai = len(ai_report["flat_comments"])
         total_pairs = n_human * n_ai
         import math as _math
-        n_chunks_est = max(1, _math.ceil(n_human / 10))
+        n_chunks_est = max(1, _math.ceil(n_human / _HUMAN_CHUNK_SIZE))
         # Pre-build chunk label list: [{label, row_start, row_end}] for UI.
-        _CHUNK_SIZE = 10
         chunk_labels = [
             {
                 "label": f"Chunk {ci + 1}",
-                "row_start": ci * _CHUNK_SIZE + 1,
-                "row_end": min((ci + 1) * _CHUNK_SIZE, n_human),
+                "row_start": ci * _HUMAN_CHUNK_SIZE + 1,
+                "row_end": min((ci + 1) * _HUMAN_CHUNK_SIZE, n_human),
             }
             for ci in range(n_chunks_est)
         ]
