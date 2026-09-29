@@ -2,7 +2,8 @@
 
 Runs once per paper — not subject to the top-N selector — and emits a
 dedicated review focused strictly on writing quality (flow, terminology,
-grammar, figure captions, etc.). The output lives in its own file
+grammar, figure captions, internal consistency between text and figures/
+tables/algorithms, numbers in tables and figures). The output lives in its own file
 (``writing_clarity_review.md``); it is **not** merged into
 ``review_data.md`` and **not** compared against human reviews during
 validation. Writing feedback belongs to the author's own polishing
