@@ -39,8 +39,12 @@ _IDLE_TIMEOUT_S = 300.0
 
 
 def _deny_all(request: Any, invocation: Any) -> Any:
-    from copilot.session import PermissionRequestResult
-    return PermissionRequestResult(kind="denied-by-rules")
+    try:
+        from copilot.generated.rpc import PermissionDecisionReject
+    except ImportError:  # github-copilot-sdk 0.2.x
+        from copilot.session import PermissionRequestResult
+        return PermissionRequestResult(kind="denied-by-rules")
+    return PermissionDecisionReject()
 
 
 async def _aclose_best_effort(

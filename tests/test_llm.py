@@ -1996,7 +1996,7 @@ def test_copilot_session_is_locked_down(isolated_config):
     assert seen["cwd_existed"]
     assert not os.path.exists(seen["working_directory"])
     decision = seen["on_permission_request"](SimpleNamespace(kind="shell"), {})
-    assert decision.kind.startswith("denied")
+    assert decision.kind == "reject" or decision.kind.startswith("denied")
 
 
 @pytest.mark.parametrize("fail", [False, True])
@@ -2451,10 +2451,14 @@ def test_retry_client_retries_transport_errors(isolated_config, monkeypatch, mak
     assert calls == 2
 
 
-def test_anthropic_client_streams_above_sdk_per_model_cap():
-    """The SDK refuses non-streaming calls above its per-model cap
-    (8192 for Opus 4.1), below the client's own 16 K threshold."""
+def test_anthropic_client_streams_above_sdk_per_model_cap(monkeypatch):
+    """The SDK refuses non-streaming calls above its per-model cap,
+    below the client's own 16 K threshold."""
+    from anthropic import _constants
     from ai_paper_review.llm.clients.anthropic import AnthropicClient
+
+    monkeypatch.setitem(_constants.MODEL_NONSTREAMING_TOKENS,
+                        "claude-opus-4-1-20250805", 8192)
 
     calls = []
 
