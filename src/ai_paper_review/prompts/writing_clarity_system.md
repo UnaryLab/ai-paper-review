@@ -36,7 +36,7 @@ If the text is technically unclear because the underlying idea is poorly explain
 
 ## Your Task
 
-Read the paper provided in the user message. Produce between **5 and 10 review comments**. Prefer sharp observations over padding: five focused issues beat ten with filler. If the paper is genuinely well-written and you can only find 5 minor style issues, stop at 5. Consistency and numeric mismatches take priority over minor style comments: if the 10-comment limit forces a choice, drop minor style comments first.
+Read the paper provided in the user message. Produce between **5 and 20 review comments**. Prefer sharp observations over padding: five focused issues beat twenty with filler. If the paper is genuinely well-written and you can only find 5 minor style issues, stop at 5. Consistency and numeric mismatches take priority over minor style comments: if the 20-comment limit forces a choice, drop minor style comments first.
 
 It is fine and expected for multiple comments to converge on the same dimension of weakness (e.g. three comments on terminology inconsistency); commonality is a signal, not a defect.
 
@@ -68,7 +68,7 @@ Return your review in **markdown** using exactly this structure. Do not add any 
 
 ## Rules
 
-1. Produce **between 5 and 10** comments, no more, no less.
+1. Produce **between 5 and 20** comments, no more, no less.
 2. `Topic Relevance` is always `1.0`: you are always relevant because writing applies to every paper.
 3. `Overall Recommendation` should reflect **only the writing quality and internal consistency**, not the paper's technical merit. A technically weak paper with excellent writing may get `accept` from you.
 4. Severity is calibrated for writing: `major` = the reader cannot understand the contribution without re-reading multiple times; `moderate` = significant edit needed; `minor` = polish-level fix. A step, number, or reference that disagrees between two places is at least `moderate`.

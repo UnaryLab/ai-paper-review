@@ -144,7 +144,7 @@ Open **Model** first. The page shows all seven providers as cards (green = ready
 3. Upload the **PDF**.
 4. The status page polls until the review finishes (1–5 min), then redirects to the result page, which shows:
    - Selected reviewers + their topic-relevance scores.
-   - A **Writing clarity review** section: always-on `G001` reviewer, writing quality and consistency between the text and its figures, tables, and algorithms only, never clustered or compared to human reviews.
+   - A **Writing clarity review** section: always-on `G001` reviewer, 5–20 comments on writing quality and consistency between the text and its figures, tables, and algorithms only, never clustered or compared to human reviews.
    - **Ranked issues** (major / moderate / minor) grouped by cross-reviewer clustering, each expandable to show every reviewer who raised it.
    - Downloads: `review_report.md`, `review_data.md`, and `writing_clarity_review.md`. The two similarity-matrix artifacts (`selection_similarities.md`, `clustering_similarities.md`) are listed with their paths under **Source files on disk**.
 
