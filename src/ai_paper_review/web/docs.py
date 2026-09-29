@@ -24,7 +24,7 @@ _DOCS_MANIFEST = [
      "Project overview, quick start, install, workflow diagrams."),
     ("llm_providers",       "docs/llm_providers.md",
      "LLM Providers",
-     "Supported providers (Anthropic, OpenAI, Gemini, xAI, GitHub, Copilot SDK, OpenAI-compatible)."),
+     "Supported providers (Anthropic, OpenAI, Gemini, xAI, Claude Agent SDK, Copilot SDK, OpenAI-compatible)."),
     ("database-format",     "docs/database_format.md",
      "Database Format",
      "Reviewer-database YAML and markdown formats; build-a-DB walkthrough."),

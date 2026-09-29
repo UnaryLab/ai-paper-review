@@ -77,7 +77,10 @@ def node_format_report(state):
         "> experimental design, evaluation setup, and writing quality.\n\n"
     )
     lines.append(f"**Title:** {paper['title']}\n\n")
-    lines.append(f"**Abstract:** {paper['abstract'][:800]}...\n\n")
+    abstract = paper["abstract"]
+    if len(abstract) > 800:
+        abstract = abstract[:800] + "..."
+    lines.append(f"**Abstract:** {abstract}\n\n")
     lines.append("---\n\n## Selected Reviewers\n")
     lines.append("| ID | Domain | Persona | Selection Relevance |\n|---|---|---|---|\n")
     for r, s in selected:

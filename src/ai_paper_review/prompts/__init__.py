@@ -8,20 +8,27 @@ the convention ``<stage>_<role>.md`` where ``<role>`` is ``system`` or
 ``user``:
 
     human_review_extraction_system.md   → validation/conversion.py
-    markdown_repair_system.md           → review.py (repair retry)
-    markdown_repair_user.md             → review.py (repair retry — has {raw_output})
-    batch_alignment_system.md           → validation.py
-    batch_alignment_user.md             → validation.py (has {human_block}, ...)
-    shared_reviewer_system.md           → reviewer_dispatching.py + clarity.py
+    markdown_repair_system.md           → review/reviewer_dispatching.py + review/clarity.py
+                                          (repair retry)
+    markdown_repair_user.md             → review/reviewer_dispatching.py + review/clarity.py
+                                          (repair retry, has {raw_output})
+    batch_alignment_system.md           → validation/alignment.py
+    batch_alignment_user.md             → validation/alignment.py (has {human_block}, ...)
+    shared_reviewer_system.md           → review/reviewer_dispatching.py (also used by
+                                          review/clarity.py via SHARED_REVIEWER_SYSTEM)
                                           (THE LLM ``system`` argument for every
                                           review session on a paper — identical
                                           across N persona reviewers + clarity so
                                           the provider's prompt cache hits on the
                                           (system + PDF) prefix; per-reviewer
                                           persona text lives in the user message)
-    writing_clarity_system.md           → clarity.py (loaded INTO the user message
-                                          as the clarity reviewer's role/scope,
-                                          no longer an LLM system prompt)
+    writing_clarity_system.md           → review/clarity.py (loaded INTO the user
+                                          message as the clarity reviewer's role/scope,
+                                          not as an LLM system prompt)
+
+``database_generation.md`` is not loaded by code: it is a standalone
+prompt the user pastes into an LLM to generate a reviewer-database
+config YAML.
 
 Edit the ``.md`` files to tune prompts; no Python change required.
 

@@ -14,16 +14,18 @@ parser and UI render it consistently.
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any, Dict, Optional
 
 from ai_paper_review import prompts
-from ai_paper_review.llm.clients.base import LLMClient
-from ai_paper_review.llm.config import load_config
+from ai_paper_review.llm.clients.base import FatalLLMError, LLMClient, ReplyBlockedError
+from ai_paper_review.llm.config import LLMConfig, load_config
 from ai_paper_review.llm.factory import make_client
 from ai_paper_review.llm.utils import provider_supports_pdf
 
-from .constants import EMPTY_COMMENT_RETRIES
+from .constants import CLARITY_RERUN_DELAY, CLARITY_RERUNS, EMPTY_COMMENT_RETRIES
 from .parsing import _parse_llm_output
+from .reviewer_dispatching import SHARED_REVIEWER_SYSTEM, _has_valid_comments
 
 logger = logging.getLogger("review_system")
 
@@ -64,19 +66,11 @@ def _user_msg(paper: Dict[str, str], pdf_path: Optional[str]) -> str:
     return persona_block + task
 
 
-def _has_valid_comments(p: Dict[str, Any]) -> bool:
-    """True when at least one comment carries usable summary/description.
-    Mirrors the per-reviewer dispatcher's criterion."""
-    comments = p.get("comments") or []
-    if not comments:
-        return False
-    return any(c.get("summary") or c.get("description") for c in comments)
-
-
 def _call_and_parse(
     user_msg: str,
     llm: LLMClient,
     pdf_path: Optional[str] = None,
+    max_tokens: int = LLMConfig.review_max_tokens,
 ) -> Dict[str, Any]:
     """Call the LLM and salvage the output: if it's non-empty but didn't
     produce usable comments (parse exception OR 0 summary/description
@@ -93,8 +87,8 @@ def _call_and_parse(
     # can be cached across every review session on this paper. The
     # clarity-specific role text lives inside ``user_msg`` (see
     # :func:`_user_msg`), after the PDF block.
-    from .reviewer_dispatching import SHARED_REVIEWER_SYSTEM
-    raw = llm.complete(SHARED_REVIEWER_SYSTEM, user_msg, pdf_path=pdf_path)
+    raw = llm.complete(SHARED_REVIEWER_SYSTEM, user_msg,
+                       max_tokens=max_tokens, pdf_path=pdf_path)
 
     if not raw or not raw.strip():
         raise ValueError(
@@ -125,9 +119,10 @@ def _call_and_parse(
         "First 300: %s",
         reason, len(raw), raw[:300],
     )
-    repair = prompts.load("markdown_repair_user", raw_output=raw[:8000])
+    repair = prompts.load("markdown_repair_user", raw_output=raw)
     # Repair pass is pure text-format fixing — don't re-attach the PDF.
-    raw2 = llm.complete(prompts.load("markdown_repair_system"), repair)
+    raw2 = llm.complete(prompts.load("markdown_repair_system"), repair,
+                        max_tokens=max_tokens)
     repaired = _parse_llm_output(raw2)
     # Tag so the pipeline can count this clarity-reviewer repair
     # alongside the per-reviewer repairs.
@@ -139,6 +134,7 @@ def run_clarity_review(
     paper: Dict[str, str],
     llm: Optional[LLMClient] = None,
     pdf_path: Optional[str] = None,
+    max_tokens: int = LLMConfig.review_max_tokens,
 ) -> Dict[str, Any]:
     """Run the always-on clarity reviewer against one paper.
 
@@ -161,12 +157,16 @@ def run_clarity_review(
     # repair pass also fails do we fall through to the outer loop below.
     def _attempt() -> Optional[Dict[str, Any]]:
         try:
-            return _call_and_parse(user_msg, llm, pdf_path=pdf_path)
-        except Exception as e:
-            logger.warning("Clarity reviewer: attempt failed, will retry. (%s)", e)
+            return _call_and_parse(user_msg, llm, pdf_path=pdf_path,
+                                   max_tokens=max_tokens)
+        except ValueError as e:
+            # Empty or unparseable output. Errors from the LLM call
+            # itself propagate: RetryClient already retried them.
+            logger.warning("Clarity reviewer: empty or unparseable output, "
+                           "will retry. (%s)", e)
             return None
 
-    try:
+    def _run_once() -> Optional[Dict[str, Any]]:
         parsed = _attempt()
         attempt = 0
         while (parsed is None or not _has_valid_comments(parsed)) \
@@ -177,17 +177,35 @@ def run_clarity_review(
             parsed = _attempt()
 
         if parsed is None or not _has_valid_comments(parsed):
-            logger.warning("Clarity reviewer: giving up after %d retries — "
-                           "this review will be empty.", EMPTY_COMMENT_RETRIES)
-            if parsed is None:
-                parsed = {"comments": []}
-        else:
-            n = len(parsed.get("comments") or [])
-            logger.info("Clarity reviewer: %d comments parsed.", n)
-    except Exception as e:
-        logger.error("Clarity reviewer failed: %s", e)
-        parsed = {"comments": [], "error": str(e)}
+            return None
+        logger.info("Clarity reviewer: %d comments parsed.",
+                    len(parsed.get("comments") or []))
+        return parsed
 
+    # A call error re-runs the whole reviewer; FatalLLMError and
+    # ReplyBlockedError fail the run at once. Output that is still empty
+    # or unparseable after EMPTY_COMMENT_RETRIES also fails the run.
+    for run in range(CLARITY_RERUNS + 1):
+        try:
+            parsed = _run_once()
+            break
+        except (FatalLLMError, ReplyBlockedError):
+            raise
+        except Exception as e:
+            if run == CLARITY_RERUNS:
+                raise RuntimeError(
+                    f"Clarity reviewer failed after {run + 1} attempts: {e}"
+                ) from e
+            logger.warning("Clarity reviewer failed (attempt %d/%d): %s. "
+                           "Re-running in %.0fs…",
+                           run + 1, CLARITY_RERUNS + 1, e, CLARITY_RERUN_DELAY)
+            time.sleep(CLARITY_RERUN_DELAY)
+
+    if parsed is None:
+        raise RuntimeError(
+            f"Clarity reviewer returned no valid comments after "
+            f"{EMPTY_COMMENT_RETRIES} retries"
+        )
     parsed["_reviewer_id"] = CLARITY_REVIEWER_ID
     parsed["_persona"] = CLARITY_REVIEWER_PERSONA
     parsed["_domain"] = CLARITY_REVIEWER_DOMAIN
@@ -200,20 +218,24 @@ def node_run_clarity_review(state):
     output is **not** added to ``all_comments`` (so it doesn't feed
     clustering) and **not** merged into ``raw_reviews`` (so it doesn't
     reach ``review_data.md`` / validation)."""
-    cfg = load_config()
-    if state.get("llm_provider"):
-        cfg.review_provider = state["llm_provider"]
-    if state.get("llm_model"):
-        cfg.review_model = state["llm_model"]
+    cfg = state.get("llm_config") or load_config()
+    cfg.set_review_llm(state.get("llm_provider"), state.get("llm_model"))
     llm = make_client(cfg, use_case="review")
     pdf_path = (
         state.get("pdf_path")
-        if provider_supports_pdf(cfg.review_provider)
+        if provider_supports_pdf(cfg.review_provider,
+                                 cfg.resolve_base_url_for_stage("review"))
         else None
     )
     logger.info("Running always-on writing clarity reviewer (provider=%s model=%s, pdf_input=%s)",
                 cfg.review_provider, llm.model, "yes" if pdf_path else "no")
-    state["clarity_review"] = run_clarity_review(
-        state["paper"], llm=llm, pdf_path=pdf_path,
-    )
+    try:
+        state["clarity_review"] = run_clarity_review(
+            state["paper"], llm=llm, pdf_path=pdf_path,
+            max_tokens=cfg.review_max_tokens,
+        )
+    finally:
+        cleanup = getattr(llm, "cleanup_uploaded_files", None)
+        if cleanup is not None:
+            cleanup()
     return state

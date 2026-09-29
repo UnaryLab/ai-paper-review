@@ -41,71 +41,6 @@ import yaml
 
 
 # ---------------------------------------------------------------------------
-# Derive validation attribution tables from a personas list.
-# Used when the config omits validation_attribution. Every persona name
-# produced is guaranteed to exist in the db because it comes from the same
-# personas list used to generate the reviewer entries.
-# ---------------------------------------------------------------------------
-_SUB_RATING_SLUG_HINTS: dict[str, list[str]] = {
-    # OpenReview sub-rating → list of persona slug substrings to try in order
-    "soundness":      ["methodology", "theory", "stats", "rigor"],
-    "presentation":   ["clarity", "writing", "presentation"],
-    "contribution":   ["novelty", "originality"],
-    "clarity":        ["clarity", "writing", "presentation"],
-    "significance":   ["novelty", "vision", "impact"],
-    "technical":      ["methodology", "theory", "formal"],
-    "reproducibility": ["reproducibility", "artifact"],
-}
-
-
-def _derive_attribution(personas: list[dict[str, Any]]) -> dict[str, Any]:
-    """Build a minimal validation_attribution from the personas list.
-
-    - category_vocab: one entry per persona slug.
-    - category_to_persona: slug → name, plus name-word fragments as fuzzy keys.
-    - sub_rating_to_persona: heuristic match on slug substrings; falls back to
-      the first persona in the list if no hint matches.
-    """
-    category_vocab: list[str] = []
-    category_to_persona: dict[str, str] = {}
-
-    for p in personas:
-        slug: str = p.get("slug", "")
-        name: str = p["name"]
-        if slug:
-            category_vocab.append(slug)
-            category_to_persona[slug] = name
-        # Also index each lowercase word of the name that is ≥4 chars and not
-        # already a key, so e.g. "novelty" routes "Novelty Hunter" even if the
-        # slug differs.
-        for word in name.lower().split():
-            word = word.strip("&,.")
-            if len(word) >= 4 and word not in category_to_persona:
-                category_to_persona[word] = name
-
-    # sub_rating_to_persona — match hints against slugs, fall back to first persona.
-    sub_rating_to_persona: dict[str, str] = {}
-    slug_to_name = {p.get("slug", ""): p["name"] for p in personas}
-    fallback = personas[0]["name"] if personas else ""
-    for rating, hints in _SUB_RATING_SLUG_HINTS.items():
-        matched = fallback
-        for hint in hints:
-            for slug, name in slug_to_name.items():
-                if hint in slug:
-                    matched = name
-                    break
-            else:
-                continue
-            break
-        sub_rating_to_persona[rating] = matched
-
-    return {
-        "category_vocab": category_vocab,
-        "category_to_persona": category_to_persona,
-        "sub_rating_to_persona": sub_rating_to_persona,
-    }
-
-# ---------------------------------------------------------------------------
 # System-prompt template — filled once per reviewer
 # ---------------------------------------------------------------------------
 _SYSTEM_PROMPT = """\
@@ -195,30 +130,35 @@ def _field_slug(field: str) -> str:
 
 
 def _render_attribution_yaml(attr: dict[str, Any]) -> str:
-    lines: list[str] = ["```yaml"]
+    body = yaml.safe_dump(attr, sort_keys=False, allow_unicode=True)
+    return "```yaml\n" + body + "```"
 
-    lines.append("category_vocab:")
-    for v in attr.get("category_vocab", []):
-        lines.append(f"  - {v}")
 
-    lines.append("")
-    lines.append("category_to_persona:")
-    prev_persona = None
-    for cat, persona in attr.get("category_to_persona", {}).items():
-        if prev_persona and persona != prev_persona:
-            lines.append("")
-        pad = max(1, 20 - len(cat))
-        lines.append(f"  {cat}:{' ' * pad}{persona}")
-        prev_persona = persona
-
-    lines.append("")
-    lines.append("sub_rating_to_persona:")
-    for rating, persona in attr.get("sub_rating_to_persona", {}).items():
-        pad = max(1, 14 - len(rating))
-        lines.append(f"  {rating}:{' ' * pad}{persona}")
-
-    lines.append("```")
-    return "\n".join(lines)
+def _validate_config(config: dict[str, Any]) -> None:
+    """Raise ValueError naming the offending key when the config has the wrong shape."""
+    if not isinstance(config["field"], str):
+        raise ValueError("'field' must be a string.")
+    if not isinstance(config["validation_attribution"], dict):
+        raise ValueError("'validation_attribution' must be a mapping.")
+    for key, required, list_key in (
+        ("domains", ("name",), "keywords"),
+        ("personas", ("name", "focus", "style"), "priorities"),
+    ):
+        items = config[key]
+        if not isinstance(items, list) or not items:
+            raise ValueError(f"'{key}' must be a non-empty list.")
+        for i, item in enumerate(items):
+            if not isinstance(item, dict):
+                raise ValueError(f"'{key}[{i}]' must be a mapping.")
+            for k in required:
+                if k not in item:
+                    raise ValueError(f"'{key}[{i}]' is missing required key '{k}'.")
+            values = item.get(list_key, [])
+            if not isinstance(values, list):
+                raise ValueError(f"'{key}[{i}].{list_key}' must be a list.")
+            for j, v in enumerate(values):
+                if not isinstance(v, str):
+                    raise ValueError(f"'{key}[{i}].{list_key}[{j}]' must be a string.")
 
 
 # ---------------------------------------------------------------------------
@@ -227,27 +167,34 @@ def _render_attribution_yaml(attr: dict[str, Any]) -> str:
 
 def generate(config: dict[str, Any]) -> str:
     """Return the full reviewer-database markdown string for the given config."""
+    if not isinstance(config, dict):
+        raise ValueError(
+            "Config must be a YAML mapping with field, domains, personas, "
+            "and validation_attribution keys."
+        )
     if "personas" not in config:
         raise ValueError(
             "Config is missing required key 'personas'. "
-            "Add a personas: list to your YAML — see docs/database_format.md §1."
+            "Add a personas: list to your YAML. See docs/database_format.md §1."
         )
     if "domains" not in config:
         raise ValueError(
             "Config is missing required key 'domains'. "
-            "Add a domains: list to your YAML — see docs/database_format.md §1."
+            "Add a domains: list to your YAML. See docs/database_format.md §1."
         )
     if "field" not in config:
         raise ValueError(
             "Config is missing required key 'field'. "
-            "Add field: \"your discipline\" to your YAML — see docs/database_format.md §1."
+            "Add field: \"your discipline\" to your YAML. See docs/database_format.md §1."
         )
     if "validation_attribution" not in config:
         raise ValueError(
             "Config is missing required key 'validation_attribution'. "
             "Add a validation_attribution: block with category_vocab, category_to_persona, "
-            "and sub_rating_to_persona — see docs/database_format.md §1.4."
+            "and sub_rating_to_persona: see docs/database_format.md §1, \"Validation attribution entry\"."
         )
+
+    _validate_config(config)
 
     field: str = config["field"]
     version: str = config.get("version", "1.0")
@@ -258,13 +205,18 @@ def generate(config: dict[str, Any]) -> str:
     n_domains = len(domains)
     n_personas = len(personas)
     total = n_domains * n_personas
+    if total > 999:
+        raise ValueError(
+            f"Config defines {total} reviewers ({n_domains} domains x {n_personas} personas); "
+            "reviewer IDs run R001-R999, so at most 999 reviewers are supported."
+        )
 
     lines: list[str] = []
 
     # ------------------------------------------------------------------
     # Header and sections 1–4
     # ------------------------------------------------------------------
-    title = field.title() + " Reviewer Database"
+    title = " ".join(w[:1].upper() + w[1:] for w in field.split(" ")) + " Reviewer Database"
     lines += [
         f"# {title}",
         "",
@@ -409,8 +361,10 @@ def generate(config: dict[str, Any]) -> str:
     # ------------------------------------------------------------------
     # Section 6 — programmatic access
     # ------------------------------------------------------------------
-    sample_d = domains[min(1, len(domains) - 1)]
-    sample_p = personas[min(9, len(personas) - 1)]
+    sample_di = min(1, len(domains) - 1)
+    sample_pi = min(9, len(personas) - 1)
+    sample_d = domains[sample_di]
+    sample_p = personas[sample_pi]
     sample_kws_repr = str(sample_d.get("keywords", [])[:3] + ["..."]).replace("'", '"')
 
     lines += [
@@ -423,7 +377,7 @@ def generate(config: dict[str, Any]) -> str:
         "",
         "```python",
         "{",
-        f'  "id": "R{n_personas + 1:03d}",',
+        f'  "id": "R{sample_di * n_personas + sample_pi + 1:03d}",',
         f'  "domain": "{sample_d["name"]}",',
         f'  "persona": "{sample_p["name"]}",',
         f'  "focus": "{sample_p["focus"]}",',
@@ -475,13 +429,11 @@ def main(argv: list[str] | None = None) -> None:
         if not config_path.exists():
             print(f"Error: config file not found: {config_path}", file=sys.stderr)
             sys.exit(1)
-        config = _load_yaml(config_path)
-    else:
-        config = _bundled_config()
 
     try:
+        config = _load_yaml(config_path) if args.config else _bundled_config()
         md = generate(config)
-    except ValueError as exc:
+    except (ValueError, yaml.YAMLError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         sys.exit(1)
 

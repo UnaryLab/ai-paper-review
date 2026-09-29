@@ -5,7 +5,7 @@ This document describes the files a validation run produces, the alignment it pe
 - `validation_report.md` — the human-facing report (metrics, hits, misses, false alarms, calibration suggestions).
 - `calibration_delta.json` — the structured output consumed by the cross-paper [Aggregation](aggregation.md) module when rolling up feedback across many papers.
 
-A validation run always writes to a single directory named `validation_<timestamp>_<hex>` inside the workdir's `runs/` folder. Every artifact below lives in that directory side-by-side — no subfolders, no database mutation. If a run errors mid-way, partial files may be present; only `_ui_state.json` signals completion.
+A validation run always writes to a single directory named `validation_<timestamp>_<hex>` inside the workdir's `runs/` folder. Every artifact below lives in that directory side-by-side: no subfolders, no database mutation. If a run errors mid-way, partial files may be present; `_ui_state.json` is still written, with `"status": "error"` and the error message.
 
 ---
 
@@ -24,7 +24,7 @@ A completed run writes eight files to its run directory:
 | `alignment_ranking.md`         | Human comments sorted by their best-match AI similarity, highest first.                   |
 | `_ui_state.json`               | Internal state snapshot for re-rendering the result page in the web UI.                   |
 
-Plus whichever source files the user uploaded (the human review `.txt`/`.md`, and — for upload-case AI comparisons — the AI review `.md`). The web UI's result page shows the absolute path for every file in this directory.
+Plus the source files the user uploaded, saved as `human__<name>` (the human review `.txt`/`.md`) and, for uploaded AI reviews, `ai__<name>` (the AI review `.md`). The web UI's result page shows the absolute path for every file in this directory.
 
 ---
 
@@ -65,13 +65,13 @@ The parser has a four-tier resolver chain that accepts:
 3. Positional `C<n>` / `-C<n>` — treated as the n-th AI comment
 4. Positional `H<n>` / `A<n>` in surplus — treated as the n-th row/column
 
-If pass 1 (exact-only) parses 0 rows successfully, pass 2 enables the fuzzy fallbacks and logs a warning. Unparseable rows become `missed` with similarity 0.
+If pass 1 (exact-only) parses 0 rows successfully, pass 2 enables the fuzzy fallbacks and logs a warning. A chunk that still parses 0 rows fails the run. A chunk that parses fewer rows than it has pairs is marked `⚠ INCOMPLETE` in its `alignment_llm_analysis.md` section header, and its missing pairs score 0.
 
 ### Why chunked, not pairwise
 
 Three practical reasons:
 
-1. **Cost scales as O(N+M) tokens per chunk, not O(N·M) calls.** A 15-comment human review vs a 40-comment AI review would mean 600 pairwise calls with the old approach.
+1. **Cost scales as O(N+M) tokens per chunk, not O(N·M) calls.** A 15-comment human review vs a 40-comment AI review would take 600 calls if each pair were scored separately.
 2. **The LLM sees every AI comment when scoring each chunk.** It can reason "A7 is the best match" with full context rather than scoring in isolation.
 3. **Chunks keep output-token budgets small.** A single call for a large human review can saturate per-request limits on subscription-tier providers; splitting to ≤5-human chunks avoids that. Parallel execution means wall-clock time stays comparable to a single large call.
 
@@ -84,16 +84,23 @@ Three practical reasons:
 A single markdown file, rendered top-to-bottom for humans. Section order:
 
 ```markdown
+<!-- provenance -->
+**LLM:** `<provider>` / `<model>`
+**Base URL:** `<base_url or (default)>`
+**Launched:** <timestamp>
+**Ended:** <timestamp> (duration: <duration>)
+
+---
+
 # Review Validation Report
 
 **Title:** <title or paper_id>
 **Venue:** <venue or 'n/a'>
 
 ## Semantic Comparison (LLM)
-<batch-alignment summary: N hits, M misses, F false alarms, number of
- pairs parsed. In batch mode `matches`, `missed`, and `extras` are always
- empty; the model used is noted. Per-comment icon-coded verdicts (✅ / 🟡 /
- ⚠️ / ❌) appear only when the llm_comparison carries non-empty `matches`.>
+<present when both sides have comments. Italic intro and the model used,
+ then one **Summary:** line: a count summary of the LLM similarity matrix
+ (N hits, M misses, F false alarms, number of pairs parsed).>
 
 ## Summary Metrics
 | Metric                   | Value   |
@@ -160,7 +167,7 @@ The structured form of the report, designed for programmatic cross-paper aggrega
 }
 ```
 
-`llm_comparison` is present whenever the alignment ran (always in current builds). `matches`, `missed`, and `extras` are always empty lists — the useful content is in `summary`, which holds a one-line text description of the alignment results (hit/miss/false-alarm counts, number of chunks, and the number of similarity pairs parsed). `llm_comparison` is absent from the delta only when no alignment ran at all (run errored before Stage 3).
+`llm_comparison` is present when both the human side and the AI side have comments; otherwise it is `null` in the web output and absent from the CLI output. `matches`, `missed`, and `extras` are always empty lists; the useful content is in `summary`, which holds a one-line text description of the alignment results (hit/miss/false-alarm counts, number of chunks, and the number of similarity pairs parsed).
 
 ### `metrics` shape
 
@@ -247,7 +254,7 @@ Each suggestion has a `type` field plus type-specific fields:
 | `sub_rating_signal` | `target_persona`, `sub_rating`, `support` (count), `reviewers` (list), `failure_modes` (list), `rationale`, `fix_hint` |
 | `topical_gap` | `category`, `miss_count`, `expected_persona`, `rationale`, `fix_hint` |
 
-The cross-paper aggregation module (`ai_paper_review.aggregation`) groups suggestions by `(type, target_persona, category)` across N papers and only emits a recommendation when the same grouping appears in ≥ `min_support` papers (default 2). See [Aggregation](aggregation.md) for the full usage doc.
+The cross-paper aggregation module (`ai_paper_review.aggregation`) groups suggestions by `(type, target)` across N papers, where `target` is `target_persona`, `category`, or the sorted `missing_personas_in_selection` list depending on the type. Support counts distinct papers; a group becomes a recommendation when its support is ≥ `min_support` (default 2), and the report's Skipped section lists up to 20 of the groups below that. Groups past the first 20 are not printed; the **Skipped / no-op** count in the Summary covers all of them. See [Aggregation](aggregation.md) for the full usage doc.
 
 ---
 
@@ -258,9 +265,9 @@ The validation run directory is self-contained and re-readable without re-runnin
 - `validation_report.md` is human-readable directly.
 - `calibration_delta.json` is standard JSON; parse with any tool.
 - `_ui_state.json` is **internal** — the web UI uses it to re-render the result page without re-computing anything. Don't depend on its shape; it's an implementation detail and may change without notice.
-- `alignment_similarities.md` is the most useful diagnostic file: it shows you exactly which (human, AI) pair got which similarity score, and lets you spot parse failures (rows marked `PARSE FAILED` or with suspicious all-zeros).
+- `alignment_similarities.md` is the most useful diagnostic file: it shows you exactly which (human, AI) pair got which similarity score. Parse quality is reported in `alignment_llm_analysis.md`: its `**Parsed:**` header line gives the parsed / total count with `✓`, `⚠ partial`, or `⚠ degraded`, and incomplete chunks are marked `⚠ INCOMPLETE`.
 
-The web UI's Recent validations list and result page read the run directory directly — deleting a validation means removing the run directory, and the row disappears from the UI on the next refresh.
+The web UI's Recent validations list and result page read the run directory directly: deleting a validation means removing the run directory, and the row disappears from the UI on the next refresh. A validation that is still running cannot be deleted.
 
 ---
 
@@ -268,8 +275,8 @@ The web UI's Recent validations list and result page read the run directory dire
 
 A few conditions cause partial output:
 
-- **LLM returns unparseable alignment matrix.** The parser runs a second pass with fuzzy resolvers; if that also yields 0 rows, all human comments default to `missed`/similarity 0, and the report is written with a degraded-parse indicator at the top of `alignment_similarities.md` (`⚠ degraded` or `✗ PARSE FAILED`).
+- **LLM returns unparseable alignment matrix.** The parser runs a second pass with fuzzy resolvers; if a chunk still yields 0 rows, the run fails. If some rows parse, missing pairs score 0, the chunk is marked `⚠ INCOMPLETE`, and the `**Parsed:**` line at the top of `alignment_llm_analysis.md` shows `⚠ partial` or `⚠ degraded`.
 - **Human-review conversion LLM returns empty or 0-comment output.** The conversion module raises immediately — there is no retry loop. The web worker surfaces the error to the user; `actual_raw_llm.md` is written before the parse attempt so the verbatim model response is available for diagnosis.
-- **Validation stage LLM errors (quota, rate limit).** The run's status flips to `errored` and the run directory is left partial; the `_ui_state.json` is not written, so it doesn't appear in the Recent validations result-view list (it will still show as an errored row if the in-memory job registry knows about it from this server session).
+- **Validation stage LLM errors (quota, rate limit).** The run's status flips to `error` and the run directory is left partial. A minimal `_ui_state.json` with `"status": "error"` and the error message is written, so the run shows as an error row in Recent validations (also after a server restart) and can be deleted from there.
 
 These are best diagnosed by reading `alignment_llm_analysis.md` and `actual_raw_llm.md` — the verbatim pre-parse LLM outputs. If the LLM response looks syntactically fine but the parser rejected it, the parser needs updating; if the response is empty or truncated, the provider/model is the culprit.

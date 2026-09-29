@@ -42,7 +42,7 @@
       <select name="database" id="database-select" style="min-width: 28rem;">
         {% for db in available_databases %}
           <option value="{{ db.id }}"
-                  data-n-reviewers="{{ db.n_reviewers }}"
+                  data-n-reviewers="{{ db.n_personas }}"
                   {% if db.id == '__default__' %}selected{% endif %}>
             {{ db.label }} — {{ db.n_reviewers }} reviewers
           </option>
@@ -129,7 +129,7 @@
             if (lim.limitedBy === 'db') {
               err.textContent =
                 'The selected database has only ' + lim.dbSize +
-                ' reviewer' + (lim.dbSize === 1 ? '' : 's') +
+                ' distinct reviewer persona' + (lim.dbSize === 1 ? '' : 's') +
                 '. Lower the number or pick a larger database.';
             } else {
               err.textContent =

@@ -12,7 +12,9 @@ import random
 import time
 from typing import Optional
 
-from .clients.base import LLMClient
+import httpx
+
+from .clients.base import FatalLLMError, LLMClient, ReplyBlockedError
 
 logger = logging.getLogger("llm_client")
 
@@ -20,11 +22,17 @@ logger = logging.getLogger("llm_client")
 def _is_rate_limit_error(exc: Exception) -> bool:
     """Detect rate-limit (HTTP 429) or transient (5xx) errors across SDKs.
 
-    Works with anthropic.RateLimitError, openai.RateLimitError,
-    httpx.HTTPStatusError(429), and google's ResourceExhausted. Falls back
-    to checking the string representation for 429/rate keywords so unknown
-    SDK wrappers also get caught.
+    Works with anthropic / openai errors (``status_code``) and
+    google-genai's APIError (``code``).
+    :class:`FatalLLMError` and :class:`ReplyBlockedError` are never retried.
     """
+    if isinstance(exc, (FatalLLMError, ReplyBlockedError)):
+        return False
+
+    # Dropped connections and timeouts are transient.
+    if isinstance(exc, (httpx.TransportError, TimeoutError)):
+        return True
+
     cls_name = type(exc).__name__.lower()
     if "ratelimit" in cls_name:
         return True
@@ -38,9 +46,12 @@ def _is_rate_limit_error(exc: Exception) -> bool:
     if isinstance(status, int) and 500 <= status < 600:
         return True
 
-    # Fallback: string match
-    msg = str(exc).lower()
-    return "429" in msg or "rate limit" in msg or "too many requests" in msg or "resource exhausted" in msg
+    # The CLI-backed clients (copilot_sdk, claude_sdk) raise RuntimeError
+    # with the CLI's error text as the only detail, so match that text.
+    if isinstance(exc, RuntimeError):
+        msg = str(exc).lower()
+        return "429" in msg or "rate limit" in msg or "too many requests" in msg
+    return False
 
 
 class RetryClient:
@@ -54,7 +65,7 @@ class RetryClient:
     def __init__(self, inner: LLMClient, max_retries: int = 2,
                  base_delay: float = 60.0):
         self._inner = inner
-        self._max_retries = max_retries
+        self._max_retries = max(0, max_retries)
         self._base_delay = base_delay
         # Proxy the model attribute so callers can still inspect it.
         self.model = inner.model
@@ -81,3 +92,9 @@ class RetryClient:
                 )
                 time.sleep(delay)
         raise last_exc  # unreachable, but makes type-checkers happy
+
+    def cleanup_uploaded_files(self) -> None:
+        """Forward to the wrapped client's cleanup, if it has one."""
+        cleanup = getattr(self._inner, "cleanup_uploaded_files", None)
+        if cleanup is not None:
+            cleanup()

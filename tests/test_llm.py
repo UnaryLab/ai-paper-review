@@ -1,6 +1,9 @@
 """Config loader, provider probe, and CLI override behavior."""
 from __future__ import annotations
 
+import time
+from datetime import datetime
+from types import SimpleNamespace
 
 import pytest
 
@@ -82,7 +85,7 @@ def test_validation_inherit_sentinel_overrides_config_yaml(isolated_config, monk
     (isolated_config / "config.yaml").write_text(
         "llm_review:\n"
         "  provider: anthropic_api\n"
-        "  model: claude-sonnet-4-5-20250929\n"
+        "  model: claude-opus-5-5\n"
         "llm_validation:\n"
         "  provider: openai_api\n"        # config.yaml says openai for validation
         "  model: gpt-4o-mini\n"
@@ -104,7 +107,7 @@ def test_validation_inherit_sentinel_overrides_config_yaml(isolated_config, monk
     assert cfg.validation_base_url is None
     # resolve_*("validation") now inherits from the review stage.
     assert cfg.resolve_provider("validation") == "anthropic_api"
-    assert cfg.resolve_model("validation") == "claude-sonnet-4-5-20250929"
+    assert cfg.resolve_model("validation") == "claude-opus-5-5"
 
 
 def test_validation_env_override_with_explicit_value_wins(isolated_config, monkeypatch):
@@ -113,7 +116,7 @@ def test_validation_env_override_with_explicit_value_wins(isolated_config, monke
     (isolated_config / "config.yaml").write_text(
         "llm_review:\n"
         "  provider: anthropic_api\n"
-        "  model: claude-sonnet-4-5-20250929\n"
+        "  model: claude-opus-5-5\n"
         "llm_validation:\n"
         "  provider: openai_api\n"
         "  model: gpt-4o-mini\n"
@@ -131,10 +134,10 @@ def test_probe_providers_shape(isolated_config, monkeypatch):
     monkeypatch.setattr(probing, "_copilot_sdk_installed", lambda: False)
     monkeypatch.setattr(probing, "_claude_sdk_installed", lambda: False)
     probed = probe_providers()
-    assert len(probed) == 8
+    assert len(probed) == 7
     names = [p["name"] for p in probed]
     assert set(names) == {"anthropic_api", "openai_api", "google_api", "xai_api",
-                           "github_api", "copilot_sdk", "claude_sdk",
+                           "copilot_sdk", "claude_sdk",
                            "openai_compatible_api"}
     for p in probed:
         assert set(p.keys()) >= {"name", "label", "configured", "key_source",
@@ -151,19 +154,6 @@ def test_probe_providers_mixed(config_with_openai, monkeypatch):
     assert probed["google_api"]["key_source"] == "env var"
     assert probed["anthropic_api"]["configured"] is False
     assert probed["xai_api"]["configured"] is False
-    assert probed["github_api"]["configured"] is False
-
-
-def test_github_has_default_base_url():
-    """Users shouldn't need to configure base_urls for these built-ins."""
-    cfg = LLMConfig(review_provider="github_api")
-    assert cfg.resolve_base_url("github_api") == "https://models.github.ai/inference"
-
-
-def test_github_env_var_fallback(isolated_config, monkeypatch):
-    monkeypatch.setenv("GITHUB_TOKEN", "ghp_test")
-    cfg = load_config()
-    assert cfg.resolve_api_key("github_api") == "ghp_test"
 
 
 def test_describe_config_hides_keys(config_with_openai):
@@ -191,6 +181,17 @@ def test_unsupported_provider_rejected(isolated_config, monkeypatch):
     monkeypatch.setenv("PAPER_REVIEW_REVIEW_PROVIDER_OVERRIDE", "bogus")
     with pytest.raises(ValueError, match="Unsupported review_provider"):
         load_config()
+
+
+def test_removed_github_api_provider_rejected(isolated_config, monkeypatch):
+    msg = "github_api was removed: GitHub Models is retired; choose another provider"
+    monkeypatch.setenv("PAPER_REVIEW_VALIDATION_PROVIDER_OVERRIDE", "github_api")
+    with pytest.raises(ValueError, match=msg):
+        load_config()
+    # Per-job state sets the provider after load_config, so make_client checks too.
+    cfg = LLMConfig(review_provider="github_api")
+    with pytest.raises(ValueError, match=msg):
+        make_client(cfg, use_case="review")
 
 
 def test_rate_limit_config_defaults(isolated_config):
@@ -221,8 +222,34 @@ def test_rate_limit_config_from_yaml(isolated_config):
     assert cfg.retry_base_delay == 15.0
 
 
-def test_retry_client_retries_on_rate_limit(isolated_config):
-    """RetryClient should retry on rate-limit-like exceptions."""
+@pytest.mark.parametrize("line,expected", [
+    ("  max_tokens: 4096\n", 4096),
+    ("  max_tokens:\n", 16000),   # empty value
+    ("", 16000),                  # key missing
+])
+def test_review_max_tokens_from_yaml(isolated_config, line, expected):
+    (isolated_config / "config.yaml").write_text(
+        "llm_review:\n"
+        "  provider: anthropic_api\n" + line
+    )
+    assert load_config().review_max_tokens == expected
+
+
+def _anthropic_429():
+    import anthropic
+    import httpx
+    request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+    return anthropic.RateLimitError(
+        "rate limited", response=httpx.Response(429, request=request), body=None)
+
+
+@pytest.mark.parametrize("make_exc", [
+    _anthropic_429,
+    # Copilot SDK errors reach us only as RuntimeError text.
+    lambda: RuntimeError("CopilotSDK reported error event(s): session.error: 429 Too Many Requests"),
+])
+def test_retry_client_retries_on_rate_limit(isolated_config, make_exc):
+    """RetryClient should retry on rate-limit exceptions."""
     call_count = 0
 
     class FakeClient:
@@ -231,7 +258,7 @@ def test_retry_client_retries_on_rate_limit(isolated_config):
             nonlocal call_count
             call_count += 1
             if call_count < 3:
-                raise Exception("429 Too Many Requests")
+                raise make_exc()
             return "success"
 
     rc = RetryClient(FakeClient(), max_retries=3, base_delay=0.01)
@@ -242,15 +269,19 @@ def test_retry_client_retries_on_rate_limit(isolated_config):
 
 def test_retry_client_raises_after_exhaustion(isolated_config):
     """If all retries are exhausted, the original exception propagates."""
+    calls = 0
+
     class AlwaysFailing:
         model = "fake"
         def complete(self, system, user, max_tokens=4000, pdf_path=None):
-            raise Exception("429 rate limit exceeded forever")
+            nonlocal calls
+            calls += 1
+            raise RuntimeError("429 rate limit exceeded forever")
 
     rc = RetryClient(AlwaysFailing(), max_retries=2, base_delay=0.01)
-    import pytest
-    with pytest.raises(Exception, match="429"):
+    with pytest.raises(RuntimeError, match="429"):
         rc.complete("sys", "user")
+    assert calls == 3
 
 
 def test_retry_client_does_not_retry_non_rate_errors(isolated_config):
@@ -387,7 +418,7 @@ def test_claude_sdk_probe_when_installed(isolated_config, monkeypatch):
     page's provider cards stay consistent with the missing-config banner.
     """
     (isolated_config / "config.yaml").write_text(
-        "llm_review:\n  provider: claude_sdk\n  model: claude-sonnet-4-5-20250929\n"
+        "llm_review:\n  provider: claude_sdk\n  model: claude-opus-5-5\n"
     )
     monkeypatch.setattr(probing, "_claude_sdk_installed", lambda: True)
     probed = {p["name"]: p for p in probe_providers()}
@@ -417,18 +448,21 @@ def test_provider_supports_pdf_capability_map():
     implement PDF attachment in their complete() method. Drifting this
     silently would let the reviewer dispatcher send pdf_path to a client
     that ignores it, yielding a review of an empty paper."""
-    assert provider_supports_pdf("anthropic_api") is True
-    assert provider_supports_pdf("openai_api") is True
+    assert provider_supports_pdf("anthropic_api", None) is True
+    assert provider_supports_pdf("openai_api", None) is True
+    assert provider_supports_pdf("openai_api", "https://api.openai.com/v1") is True
+    # openai_api pointed anywhere else (Azure, proxies) gets extracted text.
+    assert provider_supports_pdf(
+        "openai_api", "https://r.openai.azure.com/openai/v1/") is False
     # xAI uses its own PDF path (upload /v1/files + Responses API) on
-    # grok-4-class models, wired up via XaiClient.
-    assert provider_supports_pdf("xai_api") is True
-    assert provider_supports_pdf("google_api") is True
-    assert provider_supports_pdf("claude_sdk") is True
+    # agentic models (e.g. grok-4.20), wired up via XaiClient.
+    assert provider_supports_pdf("xai_api", "https://api.x.ai/v1") is True
+    assert provider_supports_pdf("google_api", None) is True
+    assert provider_supports_pdf("claude_sdk", None) is True
     # Text-only providers.
-    assert provider_supports_pdf("github_api") is False
-    assert provider_supports_pdf("openai_compatible_api") is False
-    assert provider_supports_pdf("copilot_sdk") is False
-    assert provider_supports_pdf("bogus") is False
+    assert provider_supports_pdf("openai_compatible_api", "https://api.openai.com/v1") is False
+    assert provider_supports_pdf("copilot_sdk", None) is False
+    assert provider_supports_pdf("bogus", None) is False
 
 
 def test_retry_client_forwards_pdf_path(isolated_config):
@@ -783,6 +817,7 @@ def test_openai_client_forwards_prompt_cache_key_for_pdf_calls(tmp_path):
                     class _Msg:
                         content = "ok"
                     message = _Msg()
+                    finish_reason = "stop"
                 choices = [_Choice()]
             return _R()
 
@@ -840,13 +875,16 @@ def test_anthropic_client_streams_above_max_tokens_threshold():
     stream_calls = []
 
     class _FakeStreamContext:
-        def __init__(self, chunks):
-            self._chunks = chunks
-            self.text_stream = iter(chunks)
+        def __init__(self, text):
+            self._text = text
         def __enter__(self):
             return self
         def __exit__(self, *exc):
             return False
+        def get_final_message(self):
+            return SimpleNamespace(
+                content=[SimpleNamespace(type="text", text=self._text)],
+                stop_reason="end_turn")
 
     class _FakeMessages:
         def create(self, **kwargs):
@@ -856,17 +894,18 @@ def test_anthropic_client_streams_above_max_tokens_threshold():
                 text = "non-stream reply"
             class _M:
                 content = [_B()]
+                stop_reason = "end_turn"
             return _M()
 
         def stream(self, **kwargs):
             stream_calls.append(kwargs)
-            return _FakeStreamContext(["stream-", "reply"])
+            return _FakeStreamContext("stream-reply")
 
     class _FakeClient:
         def __init__(self):
             self.messages = _FakeMessages()
 
-    ac = AnthropicClient(model="claude-sonnet-4-5-20250929", api_key="x")
+    ac = AnthropicClient(model="claude-opus-5-5", api_key="x")
     ac._client = _FakeClient()
 
     # Low budget → non-streaming create.
@@ -874,7 +913,7 @@ def test_anthropic_client_streams_above_max_tokens_threshold():
     assert r1 == "non-stream reply"
     assert len(create_calls) == 1 and len(stream_calls) == 0
 
-    # High budget → streaming. The concatenated chunks come back as
+    # High budget → streaming. The final message's text comes back as
     # the full reply, same return-type as the non-streaming path.
     r2 = ac.complete("sys", "u", max_tokens=32000)
     assert r2 == "stream-reply"
@@ -900,13 +939,14 @@ def test_anthropic_client_marks_pdf_block_with_cache_control(tmp_path):
             self.last_kwargs = kwargs
             class _R:
                 content = []
+                stop_reason = "end_turn"
             return _R()
 
     class _FakeClient:
         def __init__(self):
             self.messages = _FakeMessages()
 
-    ac = AnthropicClient(model="claude-sonnet-4-5-20250929", api_key="x")
+    ac = AnthropicClient(model="claude-opus-5-5", api_key="x")
     fake = _FakeClient()
     ac._client = fake
 
@@ -1262,7 +1302,7 @@ class _FakeChatCompletionsAPI:
         class _Resp:
             pass
         msg = _Msg(); msg.content = self._content
-        ch = _Choice(); ch.message = msg
+        ch = _Choice(); ch.message = msg; ch.finish_reason = "stop"
         r = _Resp(); r.choices = [ch]
         return r
 
@@ -1394,3 +1434,1324 @@ def test_factory_wires_xai_to_XaiClient(isolated_config):
     # RetryClient wraps the raw client; unwrap to check the concrete type.
     inner = getattr(client, "_inner", client)
     assert isinstance(inner, XaiClient)
+
+
+# ---------------------------------------------------------------------------
+# claude_sdk: subprocess env, fatal errors, request delay
+# ---------------------------------------------------------------------------
+
+
+def _stub_claude_query(monkeypatch, messages=(), exc=None):
+    """Replace claude_agent_sdk.query with a stub; return the list that
+    collects the options each call received."""
+    import claude_agent_sdk
+    seen = []
+
+    async def fake_query(prompt, options):
+        seen.append(options)
+        if exc is not None:
+            raise exc
+        for m in messages:
+            yield m
+
+    monkeypatch.setattr(claude_agent_sdk, "query", fake_query)
+    return seen
+
+
+def test_claude_sdk_client_hides_api_key_from_cli(isolated_config, monkeypatch):
+    """An exported ANTHROPIC_API_KEY must not reach the CLI subprocess
+    (it would win over the OAuth login), and must stay set for this
+    process so anthropic_api keeps working."""
+    import os
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-real")
+    seen = _stub_claude_query(monkeypatch, [SimpleNamespace(content=[SimpleNamespace(text="ok")])])
+
+    assert ClaudeSDKClient(model="m").complete("sys", "user") == "ok"
+    assert seen[0].env["ANTHROPIC_API_KEY"] == ""
+    assert seen[0].setting_sources == []
+    assert os.environ["ANTHROPIC_API_KEY"] == "sk-ant-real"
+
+
+@pytest.mark.parametrize("kind", ["hard_limit", "cli_missing", "auth_failed"])
+def test_claude_sdk_client_raises_fatal_error(isolated_config, monkeypatch, kind):
+    from claude_agent_sdk import CLINotFoundError
+    from ai_paper_review.llm.clients.base import FatalLLMError
+
+    resets_at = int(time.time()) + 3600
+    if kind == "hard_limit":
+        info = SimpleNamespace(status="rejected", resets_at=resets_at,
+                               rate_limit_type="five_hour")
+        _stub_claude_query(monkeypatch, [SimpleNamespace(rate_limit_info=info)])
+    elif kind == "cli_missing":
+        _stub_claude_query(monkeypatch, exc=CLINotFoundError())
+    else:
+        _stub_claude_query(monkeypatch, [SimpleNamespace(
+            content=[SimpleNamespace(text="Invalid API key")], error="authentication_failed")])
+
+    with pytest.raises(FatalLLMError) as ei:
+        ClaudeSDKClient(model="m").complete("sys", "user")
+    if kind == "hard_limit":
+        when = datetime.fromtimestamp(resets_at).astimezone()
+        assert when.strftime("%Y-%m-%d %H:%M %Z") in str(ei.value)
+
+
+@pytest.mark.parametrize("message, retried", [
+    # Rejected, but the limit resets within 5 minutes.
+    (SimpleNamespace(rate_limit_info=SimpleNamespace(
+        status="rejected", resets_at=int(time.time()) + 60)), True),
+    (SimpleNamespace(content=[SimpleNamespace(text="API Error: 429")],
+                     error="rate_limit"), True),
+    (SimpleNamespace(content=[SimpleNamespace(text="API Error: 529")],
+                     error="server_error"), True),
+    (SimpleNamespace(content=[SimpleNamespace(text="API Error: 400")],
+                     error="invalid_request"), False),
+    (SimpleNamespace(is_error=True, subtype="error_max_turns",
+                     errors=None, result=None), False),
+])
+def test_claude_sdk_client_raises_on_cli_errors(isolated_config, monkeypatch,
+                                                message, retried):
+    """CLI error messages raise instead of being returned as the review,
+    and only rate-limit / server errors are retried."""
+    from ai_paper_review.llm.clients.base import FatalLLMError
+    from ai_paper_review.llm.clients import claude
+    from ai_paper_review.llm.retrying import _is_rate_limit_error
+
+    async def no_sleep(s):
+        pass
+    monkeypatch.setattr(claude.asyncio, "sleep", no_sleep)
+    _stub_claude_query(monkeypatch, [message])
+    with pytest.raises(RuntimeError) as ei:
+        ClaudeSDKClient(model="m").complete("sys", "user")
+    assert not isinstance(ei.value, FatalLLMError)
+    assert _is_rate_limit_error(ei.value) is retried
+
+
+def test_claude_sdk_client_returns_text_after_last_tool_use(isolated_config,
+                                                            monkeypatch):
+    _stub_claude_query(monkeypatch, [
+        SimpleNamespace(content=[SimpleNamespace(text="I will read it."),
+                                 SimpleNamespace(name="Read", input={})]),
+        SimpleNamespace(content=[SimpleNamespace(text="## Review")]),
+        SimpleNamespace(is_error=False, result="## Review"),
+    ])
+    assert ClaudeSDKClient(model="m").complete("sys", "user") == "## Review"
+
+
+def test_claude_sdk_client_limits_tools(isolated_config, monkeypatch, tmp_path):
+    """Text calls get no tools; PDF calls get only Read, on a copy of the
+    PDF in a temporary directory that is removed after the call."""
+    from pathlib import Path
+    pdf = tmp_path / "in.pdf"
+    pdf.write_bytes(b"%PDF-1.4\n")
+    seen = _stub_claude_query(
+        monkeypatch, [SimpleNamespace(content=[SimpleNamespace(text="ok")])])
+    client = ClaudeSDKClient(model="m")
+    client.complete("sys", "user")
+    client.complete("sys", "user", pdf_path=str(pdf))
+
+    text_opts, pdf_opts = seen
+    assert text_opts.tools == []
+    assert pdf_opts.tools == ["Read"]
+    assert pdf_opts.permission_mode == "dontAsk"
+    assert not pdf_opts.allowed_tools
+    assert pdf_opts.add_dirs == [pdf_opts.cwd]
+    assert "no-session-persistence" in pdf_opts.extra_args
+    assert not Path(pdf_opts.cwd).exists()
+
+
+def test_retry_client_does_not_retry_fatal_error(isolated_config):
+    from ai_paper_review.llm.clients.base import FatalLLMError
+    calls = 0
+
+    class Fatal:
+        model = "fake"
+        def complete(self, system, user, max_tokens=4000, pdf_path=None):
+            nonlocal calls
+            calls += 1
+            raise FatalLLMError("usage limit reached (rate limit, 429)")
+
+    with pytest.raises(FatalLLMError):
+        RetryClient(Fatal(), max_retries=3, base_delay=0.01).complete("s", "u")
+    assert calls == 1
+
+
+class _CountingLLM:
+    model = "fake"
+
+    def __init__(self, exc=None):
+        self.calls = 0
+        self.exc = exc
+
+    def complete(self, system, user, max_tokens=4000, pdf_path=None):
+        self.calls += 1
+        if self.exc is not None:
+            raise self.exc
+        return ""
+
+
+_PAPER = {"title": "T", "abstract": "A", "full_text": "Body"}
+
+
+def _run_persona_reviewer(llm):
+    from ai_paper_review.review.reviewer_db import Reviewer
+    from ai_paper_review.review.reviewer_dispatching import _run_single_reviewer
+    r = Reviewer(id="R1", persona="p", domain="d", focus="f", style="s",
+                 keywords=[], system_prompt="be a reviewer")
+    return _run_single_reviewer(r, _PAPER, llm)
+
+
+def _run_clarity_reviewer(llm):
+    from ai_paper_review.review.clarity import run_clarity_review
+    return run_clarity_review(_PAPER, llm=llm)
+
+
+@pytest.mark.parametrize("run", [_run_persona_reviewer, _run_clarity_reviewer])
+def test_review_loops_stop_on_fatal_error(isolated_config, run):
+    from ai_paper_review.llm.clients.base import FatalLLMError
+    llm = _CountingLLM(exc=FatalLLMError("not logged in"))
+    with pytest.raises(FatalLLMError):
+        run(llm)
+    assert llm.calls == 1
+
+
+def test_persona_reviewer_does_not_requery_call_errors(isolated_config):
+    llm = _CountingLLM(exc=RuntimeError("401 invalid x-api-key"))
+    assert "401" in _run_persona_reviewer(llm)["error"]
+    assert llm.calls == 1
+
+
+_VALID_REVIEW = ("# Review\n\n## Comment 1\n"
+                 "- **Summary:** s\n- **Description:** d\n- **Severity:** minor\n")
+
+
+def test_clarity_reviewer_reruns_after_call_error(isolated_config, monkeypatch):
+    sleeps = []
+    monkeypatch.setattr("time.sleep", sleeps.append)
+
+    class FlakyLLM(_CountingLLM):
+        def complete(self, system, user, max_tokens=4000, pdf_path=None):
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("connection reset")
+            return _VALID_REVIEW
+
+    llm = FlakyLLM()
+    result = _run_clarity_reviewer(llm)
+    assert result["comments"][0]["summary"] == "s"
+    assert "error" not in result
+    assert llm.calls == 2
+    assert len(sleeps) == 1
+
+
+def test_clarity_reviewer_fails_run_when_every_attempt_errors(
+        isolated_config, monkeypatch):
+    from ai_paper_review.review.constants import CLARITY_RERUNS
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    llm = _CountingLLM(exc=RuntimeError("connection reset"))
+    with pytest.raises(RuntimeError, match="Clarity reviewer failed"):
+        _run_clarity_reviewer(llm)
+    assert llm.calls == CLARITY_RERUNS + 1
+
+
+def test_node_run_reviewers_cancels_queued_work_on_fatal_error(
+        isolated_config, monkeypatch):
+    from ai_paper_review.llm.clients.base import FatalLLMError
+    from ai_paper_review.review import reviewer_dispatching as rd
+    from ai_paper_review.review.reviewer_db import Reviewer
+    llm = _CountingLLM(exc=FatalLLMError("not logged in"))
+    monkeypatch.setattr(rd, "make_client", lambda cfg, use_case: llm)
+    monkeypatch.setattr(rd, "load_config", lambda: LLMConfig(
+        review_provider="anthropic_api", max_concurrent=1))
+    selected = [(Reviewer(id=f"R{i}", persona="p", domain="d", focus="f",
+                          style="s", keywords=[], system_prompt="x"), 1.0)
+                for i in range(5)]
+    with pytest.raises(FatalLLMError):
+        rd.node_run_reviewers({"selected": selected, "paper": _PAPER})
+    # One worker: at most the failing call and the one it picked up next.
+    assert llm.calls <= 2
+
+
+def test_copilot_sdk_errors_are_wrapped_as_runtime_error(isolated_config):
+    from ai_paper_review.llm.retrying import _is_rate_limit_error
+
+    class JsonRpcError(Exception):
+        pass
+
+    class FakeSDKClient:
+        async def start(self):
+            pass
+
+        async def create_session(self, **kw):
+            raise JsonRpcError("429 Too Many Requests")
+
+        async def stop(self):
+            pass
+
+    client = CopilotSDKClient.__new__(CopilotSDKClient)
+    client._SDKClient = FakeSDKClient
+    client.model = "gpt-5"
+    with pytest.raises(RuntimeError) as ei:
+        client.complete("sys", "user")
+    assert isinstance(ei.value.__cause__, JsonRpcError)
+    assert _is_rate_limit_error(ei.value)
+
+
+def test_persona_loop_retries_empty_output(isolated_config):
+    from ai_paper_review.review.constants import EMPTY_COMMENT_RETRIES
+    llm = _CountingLLM()
+    assert _run_persona_reviewer(llm)["comments"] == []
+    assert llm.calls == EMPTY_COMMENT_RETRIES + 1
+
+
+def test_clarity_empty_output_fails_run_without_rerun(isolated_config):
+    from ai_paper_review.review.constants import EMPTY_COMMENT_RETRIES
+    llm = _CountingLLM()
+    with pytest.raises(RuntimeError, match="no valid comments"):
+        _run_clarity_reviewer(llm)
+    assert llm.calls == EMPTY_COMMENT_RETRIES + 1
+
+
+def test_request_delay_has_floor_for_claude_sdk_on_any_stage(isolated_config):
+    cfg = LLMConfig(review_provider="anthropic_api",
+                    validation_provider="claude_sdk", request_delay=0.0)
+    assert cfg.request_delay_for(cfg.resolve_provider("review")) == 0.0
+    assert cfg.request_delay_for(cfg.resolve_provider("validation")) == 1.0
+    cfg.request_delay = 2.5
+    assert cfg.request_delay_for("claude_sdk") == 2.5
+
+
+@pytest.mark.parametrize("logged_in", [True, False])
+def test_claude_sdk_probe_checks_cli_login(isolated_config, monkeypatch, logged_in):
+    import json
+    import subprocess
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-real")
+    monkeypatch.setattr(probing, "_CLAUDE_SDK_READY", False)
+    monkeypatch.setattr(probing, "_CLAUDE_SDK_FAILED_AT", float("-inf"))
+    monkeypatch.setattr(probing, "_claude_cli_path", lambda: "/fake/claude")
+    seen_env = {}
+
+    def fake_run(cmd, **kw):
+        seen_env.update(kw["env"])
+        out = json.dumps({"loggedIn": logged_in, "authMethod": "claude.ai"})
+        return subprocess.CompletedProcess(cmd, 0, stdout=out, stderr="")
+
+    monkeypatch.setattr(probing.subprocess, "run", fake_run)
+    assert probing._claude_sdk_installed() is logged_in
+    assert seen_env["ANTHROPIC_API_KEY"] == ""
+
+
+def test_ingest_pdf_uses_job_provider_and_model(isolated_config, monkeypatch):
+    """node_ingest_pdf must build its client for the per-job provider and
+    model, not the config.yaml default."""
+    from ai_paper_review.llm import factory
+    from ai_paper_review.review import review
+    seen = {}
+
+    def fake_make_client(cfg, use_case="default"):
+        seen["provider"] = cfg.resolve_provider(use_case)
+        seen["model"] = cfg.resolve_model(use_case)
+        return object()
+
+    monkeypatch.setattr(factory, "make_client", fake_make_client)
+    monkeypatch.setattr(review, "extract_pdf_for_provider", lambda p, prov: "text " * 200)
+    monkeypatch.setattr(review, "extract_paper_summary_llm",
+                        lambda text, llm: {"title": "T"})
+    review.node_ingest_pdf({"pdf_path": "x.pdf", "llm_provider": "claude_sdk",
+                            "llm_model": "claude-opus-x"})
+    assert seen == {"provider": "claude_sdk", "model": "claude-opus-x"}
+
+
+def test_node_run_reviewers_raises_only_when_every_reviewer_fails(isolated_config, monkeypatch):
+    import pytest
+    from ai_paper_review.review import reviewer_dispatching as rd
+    from ai_paper_review.review.reviewer_db import Reviewer
+
+    class FakeLLM:
+        model = "fake"
+
+    monkeypatch.setattr(rd, "make_client", lambda cfg, use_case: FakeLLM())
+    monkeypatch.setattr(rd._time, "sleep", lambda s: None)
+
+    def reviewer(rid):
+        return Reviewer(id=rid, persona="P", domain="D", focus="", style="",
+                        keywords=[], system_prompt="")
+
+    def fail(r, paper, llm, pdf_path, max_tokens):
+        return {"_reviewer_id": r.id, "_persona": r.persona, "_domain": r.domain,
+                "error": "401 invalid x-api-key", "comments": []}
+
+    state = {"selected": [(reviewer("R1"), 1.0), (reviewer("R2"), 1.0)],
+             "paper": {}}
+    monkeypatch.setattr(rd, "_run_single_reviewer", fail)
+    with pytest.raises(RuntimeError, match="401 invalid x-api-key"):
+        rd.node_run_reviewers(dict(state))
+
+    def one_ok(r, paper, llm, pdf_path, max_tokens):
+        if r.id == "R1":
+            return {"_reviewer_id": r.id, "_persona": r.persona,
+                    "_domain": r.domain, "comments": [{"summary": "s"}]}
+        return fail(r, paper, llm, pdf_path, max_tokens)
+
+    monkeypatch.setattr(rd, "_run_single_reviewer", one_ok)
+    out = rd.node_run_reviewers(dict(state))
+    assert len(out["all_comments"]) == 1
+
+
+def test_claude_sdk_still_has_find_cli():
+    from claude_agent_sdk._internal.transport.subprocess_cli import (
+        SubprocessCLITransport,
+    )
+    assert callable(getattr(SubprocessCLITransport, "_find_cli", None))
+
+
+def test_claude_cli_path_falls_back_to_which(monkeypatch):
+    from claude_agent_sdk._internal.transport.subprocess_cli import (
+        SubprocessCLITransport,
+    )
+
+    def broken(self):
+        raise AttributeError("_find_cli removed")
+
+    monkeypatch.setattr(SubprocessCLITransport, "_find_cli", broken)
+    monkeypatch.setattr("shutil.which", lambda name: f"/which/{name}")
+    assert probing._claude_cli_path() == "/which/claude"
+
+
+# ---------------------------------------------------------------------------
+# Provider request format: PDF routing, token parameter, Copilot session
+# settings, and empty-reply errors.
+# ---------------------------------------------------------------------------
+
+_AZURE_URL = "https://r.openai.azure.com/openai/v1/"
+
+
+class _CapturingReviewLLM:
+    model = "fake"
+
+    def __init__(self):
+        self.calls = []
+
+    def complete(self, system, user, max_tokens=4000, pdf_path=None):
+        self.calls.append({"user": user, "pdf_path": pdf_path,
+                           "max_tokens": max_tokens})
+        return _VALID_REVIEW
+
+
+def _node_persona(monkeypatch, cfg, llm, pdf):
+    from ai_paper_review.review import reviewer_dispatching as rd
+    from ai_paper_review.review.reviewer_db import Reviewer
+    monkeypatch.setattr(rd, "make_client", lambda cfg, use_case: llm)
+    monkeypatch.setattr(rd, "load_config", lambda: cfg)
+    r = Reviewer(id="R1", persona="p", domain="d", focus="f", style="s",
+                 keywords=[], system_prompt="x")
+    rd.node_run_reviewers({"selected": [(r, 1.0)], "paper": _PAPER, "pdf_path": pdf})
+
+
+def _node_clarity(monkeypatch, cfg, llm, pdf):
+    from ai_paper_review.review import clarity
+    monkeypatch.setattr(clarity, "make_client", lambda cfg, use_case: llm)
+    monkeypatch.setattr(clarity, "load_config", lambda: cfg)
+    clarity.node_run_clarity_review({"paper": _PAPER, "pdf_path": pdf})
+
+
+@pytest.mark.parametrize("node", [_node_persona, _node_clarity])
+@pytest.mark.parametrize("base_url,expect_pdf", [(None, True), (_AZURE_URL, False)])
+def test_openai_api_pdf_routing_follows_base_url(
+        isolated_config, monkeypatch, tmp_path, node, base_url, expect_pdf):
+    pdf = str(tmp_path / "p.pdf")
+    cfg = LLMConfig(review_provider="openai_api", review_base_url=base_url,
+                    max_concurrent=1)
+    llm = _CapturingReviewLLM()
+    node(monkeypatch, cfg, llm, pdf)
+    call = llm.calls[0]
+    if expect_pdf:
+        assert call["pdf_path"] == pdf
+        assert "Body" not in call["user"]
+    else:
+        assert call["pdf_path"] is None
+        assert "Body" in call["user"]
+
+
+class _RepairedReviewLLM(_CapturingReviewLLM):
+    """The first reply has no usable comment, so the second call is the
+    markdown repair."""
+
+    def complete(self, system, user, max_tokens=4000, pdf_path=None):
+        reply = super().complete(system, user, max_tokens, pdf_path)
+        if len(self.calls) == 1:
+            return "# Review\n\n## Comment 1\n- **Severity:** minor\n"
+        return reply
+
+
+@pytest.mark.parametrize("node", [_node_persona, _node_clarity])
+def test_review_calls_request_configured_max_tokens(
+        isolated_config, monkeypatch, node):
+    cfg = LLMConfig(review_provider="openai_compatible_api", max_concurrent=1,
+                    review_max_tokens=4096)
+    llm = _RepairedReviewLLM()
+    node(monkeypatch, cfg, llm, None)
+    # The review call, then its markdown-repair call.
+    assert [c["max_tokens"] for c in llm.calls] == [4096, 4096]
+
+
+class _FakeChat:
+    def __init__(self, content="ok", finish_reason="stop"):
+        self.calls = []
+        self.completions = self
+        self.chat = self
+        self._reply = SimpleNamespace(choices=[SimpleNamespace(
+            message=SimpleNamespace(content=content),
+            finish_reason=finish_reason)])
+
+    def create(self, **kwargs):
+        self.calls.append(kwargs)
+        return self._reply
+
+
+@pytest.mark.parametrize("provider,base_url,token_key", [
+    ("openai_api", None, "max_completion_tokens"),
+    ("openai_api", "https://api.openai.com/v1", "max_completion_tokens"),
+    ("openai_api", _AZURE_URL, "max_completion_tokens"),
+    ("openai_api", "http://litellm.internal:4000/v1", "max_tokens"),
+    ("openai_compatible_api", "http://localhost:11434/v1", "max_tokens"),
+    ("xai_api", None, "max_tokens"),
+])
+def test_openai_family_token_parameter_per_provider(
+        isolated_config, provider, base_url, token_key):
+    cfg = LLMConfig(review_provider=provider, review_base_url=base_url,
+                    api_keys={provider: "k"})
+    client = make_client(cfg, use_case="review")
+    fake = _FakeChat()
+    client._inner._client = fake
+    client.complete("s", "u", max_tokens=1234)
+    call = fake.calls[0]
+    assert call[token_key] == 1234
+    other = {"max_tokens", "max_completion_tokens"} - {token_key}
+    assert not other & call.keys()
+
+
+def test_openai_client_attaches_pdf_only_for_openai_endpoint(isolated_config, tmp_path):
+    from ai_paper_review.llm.clients.openai import OpenAIClient
+    pdf = tmp_path / "p.pdf"
+    pdf.write_bytes(b"%PDF-1.4\n")
+    for base_url, attached in [(None, True), (_AZURE_URL, False)]:
+        oc = OpenAIClient(model="gpt-4o", api_key="x", base_url=base_url)
+        fake = _FakeChat()
+        oc._client = fake
+        oc.complete("s", "u", pdf_path=str(pdf))
+        content = fake.calls[0]["messages"][1]["content"]
+        assert isinstance(content, list) is attached
+
+
+def test_openai_client_raises_when_budget_used_up_with_no_text(isolated_config):
+    from ai_paper_review.llm.clients.openai import OpenAIClient
+    from ai_paper_review.llm.retrying import _is_rate_limit_error
+    oc = OpenAIClient(model="o3", api_key="x")
+    from ai_paper_review.llm.clients.base import ReplyBlockedError
+    oc._client = _FakeChat(content="", finish_reason="length")
+    with pytest.raises(ReplyBlockedError, match="max_tokens=50") as ei:
+        oc.complete("s", "u", max_tokens=50)
+    assert not _is_rate_limit_error(ei.value)
+    # Truncated but non-empty output is still returned.
+    oc._client = _FakeChat(content="partial", finish_reason="length")
+    assert oc.complete("s", "u") == "partial"
+
+
+def test_copilot_session_is_locked_down(isolated_config):
+    import os
+    seen = {}
+
+    class FakeSession:
+        def on(self, handler):
+            self._handler = handler
+
+        async def send(self, prompt):
+            seen["prompt"] = prompt
+            ev = lambda t, **d: SimpleNamespace(
+                type=SimpleNamespace(value=t), data=SimpleNamespace(**d))
+            self._handler(ev("assistant.message_delta", delta_content="review"))
+            self._handler(ev("session.idle"))
+
+    class FakeSDKClient:
+        async def start(self):
+            pass
+
+        async def create_session(self, **kw):
+            seen.update(kw)
+            seen["cwd_existed"] = os.path.isdir(kw["working_directory"])
+            return FakeSession()
+
+        async def stop(self):
+            pass
+
+    client = CopilotSDKClient.__new__(CopilotSDKClient)
+    client._SDKClient = FakeSDKClient
+    client.model = "gpt-5"
+    assert client.complete("sys text", "user text") == "review"
+
+    assert seen["model"] == "gpt-5"
+    assert seen["system_message"] == {"mode": "append", "content": "sys text"}
+    assert seen["prompt"] == "user text"
+    assert seen["available_tools"] == []
+    assert seen["cwd_existed"]
+    assert not os.path.exists(seen["working_directory"])
+    decision = seen["on_permission_request"](SimpleNamespace(kind="shell"), {})
+    assert decision.kind.startswith("denied")
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_copilot_session_is_deleted_from_disk(isolated_config, fail):
+    calls = []
+
+    class FakeSession:
+        session_id = "sid-1"
+
+        def on(self, handler):
+            self._handler = handler
+
+        async def send(self, prompt):
+            ev = lambda t, **d: SimpleNamespace(
+                type=SimpleNamespace(value=t), data=SimpleNamespace(**d))
+            if fail:
+                self._handler(ev("session.error", message="boom"))
+            else:
+                self._handler(ev("assistant.message_delta", delta_content="ok"))
+                self._handler(ev("session.idle"))
+
+        async def __aexit__(self, *exc):
+            calls.append("disconnect")
+
+    class FakeSDKClient:
+        async def start(self):
+            pass
+
+        async def create_session(self, **kw):
+            return FakeSession()
+
+        async def delete_session(self, session_id):
+            calls.append(("delete", session_id))
+            if fail:
+                raise RuntimeError("delete failed")
+
+        async def stop(self):
+            calls.append("stop")
+
+    client = CopilotSDKClient.__new__(CopilotSDKClient)
+    client._SDKClient = FakeSDKClient
+    client.model = "gpt-5"
+    if fail:
+        with pytest.raises(RuntimeError, match="boom"):
+            client.complete("s", "u")
+    else:
+        assert client.complete("s", "u") == "ok"
+    assert calls == ["disconnect", ("delete", "sid-1"), "stop"]
+
+
+def _fake_gemini(resp):
+    import threading
+    from ai_paper_review.llm.clients.google import GoogleClient
+    from google.genai import types as gtypes
+    gc = GoogleClient.__new__(GoogleClient)
+    gc._client = SimpleNamespace(models=SimpleNamespace(
+        generate_content=lambda **kw: resp))
+    gc._types = gtypes
+    gc.model = "gemini-2.5-pro"
+    gc._cache_names = {}
+    gc._cache_lock = threading.Lock()
+    return gc
+
+
+def _gemini_resp(text=None, block=None, finish=None):
+    return SimpleNamespace(
+        text=text,
+        prompt_feedback=SimpleNamespace(block_reason=block) if block else None,
+        candidates=[SimpleNamespace(finish_reason=finish)] if finish else None,
+    )
+
+
+@pytest.mark.parametrize("resp_kw,match", [
+    ({"block": "SAFETY"}, "blocked"),
+    ({"finish": "SAFETY", "text": "partial"}, "SAFETY"),
+    ({"finish": "MAX_TOKENS"}, "max_tokens=77"),
+])
+def test_google_client_raises_on_blocked_or_empty_reply(isolated_config, resp_kw, match):
+    from google.genai import types as gtypes
+    from ai_paper_review.llm.retrying import _is_rate_limit_error
+    if "block" in resp_kw:
+        resp_kw["block"] = gtypes.BlockedReason(resp_kw["block"])
+    if "finish" in resp_kw:
+        resp_kw["finish"] = gtypes.FinishReason(resp_kw["finish"])
+    from ai_paper_review.llm.clients.base import ReplyBlockedError
+    gc = _fake_gemini(_gemini_resp(**resp_kw))
+    with pytest.raises(ReplyBlockedError, match=match) as ei:
+        gc.complete("s", "u", max_tokens=77)
+    assert not _is_rate_limit_error(ei.value)
+
+
+def test_google_client_returns_truncated_text(isolated_config):
+    from google.genai import types as gtypes
+    gc = _fake_gemini(_gemini_resp(text=" cut ", finish=gtypes.FinishReason.MAX_TOKENS))
+    assert gc.complete("s", "u") == "cut"
+
+
+def test_title_extraction_budget_leaves_room_for_thinking(isolated_config):
+    from ai_paper_review.review.pdf_ingestion import extract_paper_summary_llm
+    seen = {}
+
+    class LLM:
+        def complete(self, system, user, max_tokens=4000, pdf_path=None):
+            seen["max_tokens"] = max_tokens
+            return "Title: T\nAbstract: A"
+
+    extract_paper_summary_llm("text", LLM())
+    assert seen["max_tokens"] >= 4000
+
+
+def test_default_review_model_is_current_sonnet(isolated_config):
+    (isolated_config / "config.yaml").write_text(
+        "llm_review:\n  provider: anthropic_api\n")
+    assert load_config().resolve_model("review") == "claude-sonnet-5-5"
+    assert LLMConfig().review_model == "claude-sonnet-5-5"
+    import inspect
+    default = inspect.signature(ClaudeSDKClient).parameters["model"].default
+    assert default == "claude-sonnet-5-5"
+
+
+def _fake_anthropic(reply):
+    from ai_paper_review.llm.clients.anthropic import AnthropicClient
+
+    class _Stream:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def get_final_message(self):
+            return reply
+
+    ac = AnthropicClient(model="claude-sonnet-5-5", api_key="x")
+    ac._client = SimpleNamespace(messages=SimpleNamespace(
+        create=lambda **kw: reply, stream=lambda **kw: _Stream()))
+    return ac
+
+
+def _anthropic_reply(text, stop_reason):
+    blocks = [SimpleNamespace(type="text", text=text)] if text else []
+    return SimpleNamespace(content=blocks, stop_reason=stop_reason)
+
+
+@pytest.mark.parametrize("max_tokens", [77, 32000])   # create and stream paths
+@pytest.mark.parametrize("text,stop_reason,match", [
+    ("", "refusal", "refused"),
+    ("partial", "refusal", "refused"),
+    ("", "max_tokens", "max_tokens="),
+])
+def test_anthropic_client_raises_on_refusal_or_empty_budget(
+        isolated_config, max_tokens, text, stop_reason, match):
+    from ai_paper_review.llm.retrying import _is_rate_limit_error
+    from ai_paper_review.llm.clients.base import ReplyBlockedError
+    ac = _fake_anthropic(_anthropic_reply(text, stop_reason))
+    with pytest.raises(ReplyBlockedError, match=match) as ei:
+        ac.complete("s", "u", max_tokens=max_tokens)
+    assert not _is_rate_limit_error(ei.value)
+
+
+@pytest.mark.parametrize("max_tokens", [77, 32000])
+def test_anthropic_client_returns_truncated_text(isolated_config, max_tokens):
+    ac = _fake_anthropic(_anthropic_reply("cut", "max_tokens"))
+    assert ac.complete("s", "u", max_tokens=max_tokens) == "cut"
+
+
+@pytest.mark.parametrize("provider,base_url,local", [
+    ("claude_sdk", None, True),
+    ("copilot_sdk", None, True),
+    ("openai_compatible_api", "http://localhost:11434/v1", True),
+    ("openai_compatible_api", "http://127.0.0.1:8000/v1", True),
+    ("openai_compatible_api", "http://[::1]:8000/v1", True),
+    ("openai_compatible_api", "http://0.0.0.0:8000/v1", True),
+    ("openai_compatible_api", "http://gpu-box.local:8000/v1", True),
+    ("openai_compatible_api", "http://192.168.1.5:11434/v1", True),
+    ("openai_compatible_api", "http://10.0.0.2:8000/v1", True),
+    ("openai_compatible_api", "http://172.16.3.4:8000/v1", True),
+    ("openai_compatible_api", "http://host.docker.internal:11434/v1", True),
+    ("openai_compatible_api", "http://8.8.8.8:8000/v1", False),
+    ("openai_compatible_api", "http://172.32.0.1:8000/v1", False),
+    ("openai_compatible_api", "https://api.together.xyz/v1", False),
+    ("openai_compatible_api", "http://localhost.example.com/v1", False),
+    ("openai_compatible_api", None, False),
+    ("anthropic_api", "http://localhost:8080", False),
+])
+def test_is_local_url_only_for_keyless_sdks_and_local_hosts(provider, base_url, local):
+    from ai_paper_review.llm.utils import _is_local_url
+    assert _is_local_url(provider, base_url) is local
+
+
+def test_remote_openai_compatible_without_key_is_not_keyless(isolated_config):
+    (isolated_config / "config.yaml").write_text(
+        "llm_review:\n"
+        "  provider: openai_compatible_api\n"
+        "  model: llama-3\n"
+        "  base_url: https://api.together.xyz/v1\n"
+    )
+    cfg = load_config()
+    assert is_local_provider(cfg, "openai_compatible_api") is False
+    oc = {p["name"]: p for p in probe_providers(cfg)}["openai_compatible_api"]
+    assert oc["configured"] is False
+    with pytest.raises(RuntimeError, match="No API key"):
+        make_client(cfg, use_case="review")
+
+
+def test_clarity_reviewer_does_not_rerun_blocked_reply(isolated_config, monkeypatch):
+    from ai_paper_review.llm.clients.base import ReplyBlockedError
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    llm = _CountingLLM(exc=ReplyBlockedError("Claude refused the request"))
+    with pytest.raises(ReplyBlockedError):
+        _run_clarity_reviewer(llm)
+    assert llm.calls == 1
+
+
+@pytest.mark.parametrize("content,refusal,finish_reason", [
+    (None, "I can't help you get around a rate limit.", "stop"),
+    ("", None, "content_filter"),
+])
+@pytest.mark.parametrize("client", ["openai", "xai"])
+def test_openai_family_raises_on_refusal_or_content_filter(
+        isolated_config, content, refusal, finish_reason, client):
+    from ai_paper_review.llm.clients.base import ReplyBlockedError
+    from ai_paper_review.llm.clients.openai import OpenAIClient
+    from ai_paper_review.llm.clients.xai import XaiClient
+    from ai_paper_review.llm.retrying import _is_rate_limit_error
+    c = (OpenAIClient(model="gpt-4o", api_key="x") if client == "openai"
+         else XaiClient(model="grok-4", api_key="x"))
+    fake = _FakeChat()
+    fake._reply = SimpleNamespace(choices=[SimpleNamespace(
+        message=SimpleNamespace(content=content, refusal=refusal),
+        finish_reason=finish_reason)])
+    c._client = fake
+    with pytest.raises(ReplyBlockedError) as ei:
+        c.complete("s", "u")
+    assert not _is_rate_limit_error(ei.value)
+
+
+def test_provider_override_drops_base_url_of_old_provider(isolated_config, monkeypatch):
+    """A config.yaml base_url belongs to its provider: switching provider
+    per job (state or --provider) must not send the new provider's key to it."""
+    from ai_paper_review.llm import factory
+    from ai_paper_review.review import review
+    (isolated_config / "config.yaml").write_text(
+        "llm_review:\n"
+        "  provider: openai_compatible_api\n"
+        "  model: llama-3\n"
+        "  base_url: https://api.together.xyz/v1\n"
+        "api_keys:\n"
+        "  anthropic_api: sk-ant-test\n"
+    )
+    built = []
+
+    def fake_make_client(cfg, use_case="default"):
+        built.append(make_client(cfg, use_case))
+        return object()
+
+    monkeypatch.setattr(factory, "make_client", fake_make_client)
+    monkeypatch.setattr(review, "extract_pdf_for_provider", lambda p, prov: "text " * 200)
+    monkeypatch.setattr(review, "extract_paper_summary_llm",
+                        lambda text, llm: {"title": "T"})
+    review.node_ingest_pdf({"pdf_path": "x.pdf", "llm_provider": "anthropic_api"})
+    assert "together" not in str(built[0]._inner._client.base_url)
+
+    # CLI --provider sets the env override; same rule.
+    monkeypatch.setenv("PAPER_REVIEW_REVIEW_PROVIDER_OVERRIDE", "anthropic_api")
+    assert load_config().resolve_base_url_for_stage("review") is None
+    # An explicit base_url override is kept.
+    monkeypatch.setenv("PAPER_REVIEW_REVIEW_BASE_URL_OVERRIDE", "https://proxy.example/v1")
+    assert load_config().resolve_base_url_for_stage("review") == "https://proxy.example/v1"
+
+
+def test_google_client_checks_block_before_reading_text(isolated_config):
+    from google.genai import types as gtypes
+    from ai_paper_review.llm.clients.base import ReplyBlockedError
+
+    class Blocked:
+        prompt_feedback = SimpleNamespace(block_reason=gtypes.BlockedReason("SAFETY"))
+        candidates = None
+
+        @property
+        def text(self):
+            raise ValueError("no text on a blocked reply")
+
+    with pytest.raises(ReplyBlockedError, match="blocked"):
+        _fake_gemini(Blocked()).complete("s", "u")
+
+
+def test_claude_sdk_waits_for_short_rate_limit_reset(isolated_config, monkeypatch):
+    from ai_paper_review.llm.clients import claude
+    from ai_paper_review.llm.retrying import _is_rate_limit_error
+    slept = []
+
+    async def fake_sleep(s):
+        slept.append(s)
+    monkeypatch.setattr(claude.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(claude.time, "time", lambda: 1000.0)
+    info = SimpleNamespace(status="rejected", resets_at=1120,
+                           rate_limit_type="five_hour")
+    _stub_claude_query(monkeypatch, [SimpleNamespace(rate_limit_info=info)])
+    with pytest.raises(RuntimeError) as ei:
+        ClaudeSDKClient(model="m").complete("sys", "user")
+    assert _is_rate_limit_error(ei.value)
+    assert slept == [121]
+
+
+def test_retry_client_forwards_cleanup_uploaded_files(isolated_config):
+    cleaned = []
+
+    class WithCleanup:
+        model = "fake"
+        def cleanup_uploaded_files(self):
+            cleaned.append(True)
+
+    class WithoutCleanup:
+        model = "fake"
+
+    RetryClient(WithCleanup()).cleanup_uploaded_files()
+    assert cleaned == [True]
+    RetryClient(WithoutCleanup()).cleanup_uploaded_files()  # no-op
+
+
+def test_openai_compatible_does_not_send_openai_key_to_other_hosts(isolated_config, monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-real-openai")
+    (isolated_config / "config.yaml").write_text(
+        "llm_review:\n"
+        "  provider: openai_compatible_api\n"
+        "  model: m\n"
+        "  base_url: https://api.thirdparty.example/v1\n"
+    )
+    cfg = load_config()
+    assert cfg.resolve_api_key("openai_compatible_api") is None
+    with pytest.raises(RuntimeError, match="No API key"):
+        make_client(cfg, use_case="review")
+    assert cfg.resolve_api_key("openai_compatible_api",
+                               "https://api.openai.com/v1") == "sk-real-openai"
+
+
+def test_is_local_provider_resolves_base_url_per_stage(isolated_config):
+    (isolated_config / "config.yaml").write_text(
+        "llm_review:\n"
+        "  provider: openai_compatible_api\n"
+        "  model: m\n"
+        "  base_url: https://api.thirdparty.example/v1\n"
+        "llm_validation:\n"
+        "  provider: openai_compatible_api\n"
+        "  base_url: http://localhost:11434/v1\n"
+    )
+    cfg = load_config()
+    assert is_local_provider(cfg, "openai_compatible_api") is False
+    assert is_local_provider(cfg, "openai_compatible_api", use_case="review") is False
+    assert is_local_provider(cfg, "openai_compatible_api", use_case="validation") is True
+
+
+@pytest.mark.parametrize("url,local", [
+    ("http://ollama:11434/v1", True),
+    ("http://gpu-box.lan:8000/v1", True),
+    ("http://mybox.local:8000/v1", True),
+    ("http://100.100.1.2:11434/v1", True),
+    ("http://100.128.0.1:11434/v1", False),
+    ("https://api.thirdparty.example/v1", False),
+])
+def test_is_local_url_private_hosts(url, local):
+    from ai_paper_review.llm.utils import _is_local_url
+    assert _is_local_url("openai_compatible_api", url) is local
+
+
+def test_rate_limit_config_empty_yaml_values_use_defaults(isolated_config):
+    (isolated_config / "config.yaml").write_text(
+        "llm_review:\n"
+        "  provider: anthropic_api\n"
+        "  request_delay:\n"
+        "  max_retries:\n"
+        "  retry_base_delay:\n"
+        "  max_concurrent:\n"
+    )
+    cfg = load_config()
+    assert (cfg.request_delay, cfg.max_retries,
+            cfg.retry_base_delay, cfg.max_concurrent) == (0.0, 2, 5.0, 10)
+
+
+def test_validation_provider_override_drops_yaml_base_url(isolated_config, monkeypatch):
+    (isolated_config / "config.yaml").write_text(
+        "llm_review:\n"
+        "  provider: anthropic_api\n"
+        "llm_validation:\n"
+        "  provider: openai_compatible_api\n"
+        "  base_url: http://localhost:11434/v1\n"
+    )
+    monkeypatch.setenv("PAPER_REVIEW_VALIDATION_PROVIDER_OVERRIDE", "xai_api")
+    cfg = load_config()
+    assert cfg.validation_base_url is None
+    assert cfg.resolve_base_url_for_stage("validation") == "https://api.x.ai/v1"
+    # Overriding to the same provider keeps the YAML base_url.
+    monkeypatch.setenv("PAPER_REVIEW_VALIDATION_PROVIDER_OVERRIDE", "openai_compatible_api")
+    assert load_config().validation_base_url == "http://localhost:11434/v1"
+    # "__inherit__" resolves to the review provider (anthropic_api), which
+    # differs from the YAML one, so the Ollama base_url is dropped.
+    monkeypatch.setenv("PAPER_REVIEW_VALIDATION_PROVIDER_OVERRIDE", "__inherit__")
+    assert load_config().validation_base_url is None
+
+
+def test_review_provider_override_drops_inherited_validation_base_url(isolated_config, monkeypatch):
+    (isolated_config / "config.yaml").write_text(
+        "llm_review:\n"
+        "  provider: openai_compatible_api\n"
+        "  base_url: http://gpu1:8000/v1\n"
+        "llm_validation:\n"
+        "  base_url: http://gpu2:8000/v1\n"
+    )
+    assert load_config().validation_base_url == "http://gpu2:8000/v1"
+    monkeypatch.setenv("PAPER_REVIEW_REVIEW_PROVIDER_OVERRIDE", "xai_api")
+    cfg = load_config()
+    assert cfg.resolve_provider("validation") == "xai_api"
+    assert cfg.validation_base_url is None
+    assert cfg.resolve_base_url_for_stage("validation") == "https://api.x.ai/v1"
+    # An explicit validation base_url override still applies.
+    monkeypatch.setenv("PAPER_REVIEW_VALIDATION_BASE_URL_OVERRIDE", "http://gpu3:8000/v1")
+    assert load_config().validation_base_url == "http://gpu3:8000/v1"
+
+
+def test_retry_client_negative_max_retries_calls_once(isolated_config):
+    class Ok:
+        model = "fake"
+        def complete(self, system, user, max_tokens=4000, pdf_path=None):
+            return "ok"
+
+    assert RetryClient(Ok(), max_retries=-1).complete("sys", "user") == "ok"
+
+
+def _httpx_connect_error():
+    import httpx
+    return httpx.ConnectError("connection reset",
+                              request=httpx.Request("POST", "https://api.example/v1"))
+
+
+@pytest.mark.parametrize("make_exc", [_httpx_connect_error, lambda: TimeoutError("timed out")])
+def test_retry_client_retries_transport_errors(isolated_config, monkeypatch, make_exc):
+    from ai_paper_review.llm import retrying
+    monkeypatch.setattr(retrying.time, "sleep", lambda s: None)
+    calls = 0
+
+    class Flaky:
+        model = "fake"
+        def complete(self, system, user, max_tokens=4000, pdf_path=None):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise make_exc()
+            return "ok"
+
+    assert RetryClient(Flaky(), max_retries=2, base_delay=0.01).complete("sys", "user") == "ok"
+    assert calls == 2
+
+
+def test_anthropic_client_streams_above_sdk_per_model_cap():
+    """The SDK refuses non-streaming calls above its per-model cap
+    (8192 for Opus 4.1), below the client's own 16 K threshold."""
+    from ai_paper_review.llm.clients.anthropic import AnthropicClient
+
+    calls = []
+
+    class _Stream:
+        def __enter__(self):
+            return self
+        def __exit__(self, *exc):
+            return False
+        def get_final_message(self):
+            return SimpleNamespace(
+                content=[SimpleNamespace(type="text", text="streamed")],
+                stop_reason="end_turn")
+
+    class _Messages:
+        def create(self, **kw):
+            calls.append("create")
+            return SimpleNamespace(
+                content=[SimpleNamespace(type="text", text="created")],
+                stop_reason="end_turn")
+        def stream(self, **kw):
+            calls.append("stream")
+            return _Stream()
+
+    ac = AnthropicClient(model="claude-opus-4-1-20250805", api_key="x")
+    ac._client = SimpleNamespace(messages=_Messages())
+    assert ac.complete("s", "u", max_tokens=8192) == "created"
+    assert ac.complete("s", "u", max_tokens=10000) == "streamed"
+    assert calls == ["create", "stream"]
+
+
+@pytest.mark.parametrize("resp", [
+    SimpleNamespace(output_text="", status="completed", incomplete_details=None,
+                    output=[SimpleNamespace(content=[SimpleNamespace(
+                        type="refusal", refusal="I can't help with that.")])]),
+    SimpleNamespace(output_text="", status="incomplete", output=[],
+                    incomplete_details=SimpleNamespace(reason="content_filter")),
+    SimpleNamespace(output_text="", status="incomplete", output=[],
+                    incomplete_details=SimpleNamespace(reason="max_output_tokens")),
+])
+def test_xai_client_pdf_path_raises_on_blocked_reply(isolated_config, tmp_path, resp):
+    from ai_paper_review.llm.clients.base import ReplyBlockedError
+    from ai_paper_review.llm.clients.xai import XaiClient
+
+    uploads = SimpleNamespace(create=lambda file, purpose: SimpleNamespace(id="file_1"))
+    client = XaiClient(model="grok-4.20-reasoning", api_key="k")
+    client._client = SimpleNamespace(
+        files=uploads, responses=SimpleNamespace(create=lambda **kw: resp))
+    pdf = tmp_path / "p.pdf"
+    pdf.write_bytes(b"%PDF-1.4\n")
+    with pytest.raises(ReplyBlockedError):
+        client.complete("s", "u", pdf_path=str(pdf))
+
+
+def test_google_client_falls_back_when_cached_call_fails(tmp_path):
+    """An expired (past-TTL) context cache makes the cached call fail;
+    the client must retry without the cache and stop using it."""
+    import threading
+    from ai_paper_review.llm.clients.google import GoogleClient
+
+    calls = []
+
+    class _Models:
+        def generate_content(self, *, model, config, contents):
+            calls.append(config.kwargs)
+            if "cached_content" in config.kwargs:
+                raise RuntimeError("403 CachedContent not found (or expired)")
+            return SimpleNamespace(text="ok")
+
+    class _Types:
+        class Part:
+            @staticmethod
+            def from_bytes(*, data, mime_type):
+                return "pdf"
+        class GenerateContentConfig:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+        CreateCachedContentConfig = GenerateContentConfig
+
+    gc = GoogleClient.__new__(GoogleClient)
+    gc._client = SimpleNamespace(
+        models=_Models(),
+        caches=SimpleNamespace(create=lambda **kw: SimpleNamespace(name="cachedContents/x")))
+    gc._types = _Types
+    gc.model = "gemini-2.5-pro"
+    gc._cache_names = {}
+    gc._cache_lock = threading.Lock()
+    pdf = tmp_path / "p.pdf"
+    pdf.write_bytes(b"%PDF-1.4\n")
+
+    assert gc.complete("sys", "u1", pdf_path=str(pdf)) == "ok"
+    assert gc.complete("sys", "u2", pdf_path=str(pdf)) == "ok"
+    # cached (fails), uncached, then uncached only.
+    assert ["cached_content" in c for c in calls] == [True, False, False]
+    assert calls[1]["system_instruction"] == "sys"
+
+
+@pytest.mark.parametrize("status, retried", [(429, True), (500, True),
+                                             (529, True), (400, False)])
+def test_claude_sdk_client_retries_result_api_error_status(isolated_config, monkeypatch,
+                                                           status, retried):
+    """A ResultMessage with is_error and api_error_status 429 / 5xx is
+    retried; other statuses are not."""
+    import claude_agent_sdk
+    from ai_paper_review.llm.retrying import _is_rate_limit_error
+
+    async def fake_query(prompt, options):
+        yield SimpleNamespace(is_error=True, subtype="success", errors=None,
+                              result="API Error: Overloaded",
+                              api_error_status=status)
+
+    monkeypatch.setattr(claude_agent_sdk, "query", fake_query)
+    with pytest.raises(RuntimeError) as ei:
+        ClaudeSDKClient(model="m").complete("sys", "user")
+    assert _is_rate_limit_error(ei.value) is retried
+
+
+def test_copilot_idle_timeout_resets_while_events_stream(isolated_config, monkeypatch):
+    """A reply that keeps streaming past the idle timeout completes; a
+    session with no events for the timeout still raises."""
+    import asyncio
+    from ai_paper_review.llm.clients import copilot
+
+    monkeypatch.setattr(copilot, "_IDLE_TIMEOUT_S", 0.1)
+    ev = lambda t, **d: SimpleNamespace(type=SimpleNamespace(value=t),
+                                        data=SimpleNamespace(**d))
+
+    def make_sdk(n_deltas):
+        class FakeSession:
+            def on(self, handler):
+                self._handler = handler
+
+            async def send(self, prompt):
+                async def stream():
+                    for _ in range(n_deltas):
+                        await asyncio.sleep(0.04)
+                        self._handler(ev("assistant.message_delta", delta_content="x"))
+                    if n_deltas:
+                        self._handler(ev("session.idle"))
+                self._task = asyncio.ensure_future(stream())
+
+        class FakeSDKClient:
+            async def start(self):
+                pass
+            async def create_session(self, **kw):
+                return FakeSession()
+            async def stop(self):
+                pass
+        return FakeSDKClient
+
+    client = CopilotSDKClient.__new__(CopilotSDKClient)
+    client.model = "gpt-5"
+    # 10 deltas over ~0.4 s, longer than the 0.1 s timeout.
+    client._SDKClient = make_sdk(10)
+    assert client.complete("s", "u") == "x" * 10
+    client._SDKClient = make_sdk(0)
+    with pytest.raises(RuntimeError, match="no events"):
+        client.complete("s", "u")
+
+
+@pytest.mark.parametrize("url, expected", [
+    (None, True),
+    ("https://api.openai.com/v1", True),
+    ("https://eu.api.openai.com/v1", True),
+    ("https://openai.com.attacker.example/v1", False),
+    ("https://attacker.example/openai.com/v1", False),
+    ("https://myres.openai.azure.com", False),
+])
+def test_is_openai_endpoint_matches_hostname_not_substring(isolated_config, monkeypatch,
+                                                           url, expected):
+    from ai_paper_review.llm.utils import is_openai_endpoint
+    assert is_openai_endpoint(url) is expected
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-real-openai")
+    key = load_config().resolve_api_key("openai_compatible_api", url)
+    assert (key == "sk-real-openai") is expected
+
+
+def test_no_key_message_omits_openai_env_var_for_other_hosts(isolated_config):
+    (isolated_config / "config.yaml").write_text(
+        "llm_review:\n"
+        "  provider: openai_compatible_api\n"
+        "  model: m\n"
+        "  base_url: https://api.groq.example/v1\n"
+    )
+    with pytest.raises(RuntimeError, match="No API key") as ei:
+        make_client(load_config(), use_case="review")
+    assert "OPENAI_API_KEY" not in str(ei.value)
+    assert "api_keys.openai_compatible_api" in str(ei.value)
+    assert env_vars_for("openai_compatible_api") == []
+    assert env_vars_for("openai_compatible_api",
+                        "https://api.openai.com/v1") == ["OPENAI_API_KEY"]
+    assert env_vars_for("openai_api") == ["OPENAI_API_KEY"]
+
+
+def _google_client_raising_on_cached_call(tmp_path, exc):
+    import threading
+    from ai_paper_review.llm.clients.google import GoogleClient
+
+    calls = []
+
+    class _Models:
+        def generate_content(self, *, model, config, contents):
+            calls.append(config.kwargs)
+            if "cached_content" in config.kwargs:
+                raise exc
+            return SimpleNamespace(text="ok")
+
+    class _Types:
+        class Part:
+            @staticmethod
+            def from_bytes(*, data, mime_type):
+                return "pdf"
+        class GenerateContentConfig:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+        CreateCachedContentConfig = GenerateContentConfig
+
+    gc = GoogleClient.__new__(GoogleClient)
+    gc._client = SimpleNamespace(
+        models=_Models(),
+        caches=SimpleNamespace(create=lambda **kw: SimpleNamespace(name="cachedContents/x")))
+    gc._types = _Types
+    gc.model = "gemini-2.5-pro"
+    gc._cache_names = {}
+    gc._cache_lock = threading.Lock()
+    pdf = tmp_path / "p.pdf"
+    pdf.write_bytes(b"%PDF-1.4\n")
+    return gc, str(pdf), calls
+
+
+@pytest.mark.parametrize("code, status, falls_back", [
+    (404, "NOT_FOUND", True),
+    (403, "PERMISSION_DENIED", True),
+    (429, "RESOURCE_EXHAUSTED", False),
+    (500, "INTERNAL", False),
+])
+def test_google_client_falls_back_only_on_cache_missing(tmp_path, code, status, falls_back):
+    from google.genai import errors
+    cls = errors.ClientError if code < 500 else errors.ServerError
+    exc = cls(code, {"error": {"message": "boom", "status": status}})
+    gc, pdf, calls = _google_client_raising_on_cached_call(tmp_path, exc)
+    if falls_back:
+        assert gc.complete("sys", "u1", pdf_path=pdf) == "ok"
+        assert gc._cache_names[pdf] is None
+    else:
+        with pytest.raises(type(exc)):
+            gc.complete("sys", "u1", pdf_path=pdf)
+        assert gc._cache_names[pdf] == "cachedContents/x"
+        assert len(calls) == 1
+
+
+def test_validation_override_equal_to_inherited_provider_keeps_yaml_base_url(
+        isolated_config, monkeypatch):
+    (isolated_config / "config.yaml").write_text(
+        "llm_review:\n"
+        "  provider: openai_compatible_api\n"
+        "  base_url: https://api.thirdparty.example/v1\n"
+        "llm_validation:\n"
+        "  base_url: http://localhost:11434/v1\n"
+    )
+    monkeypatch.setenv("PAPER_REVIEW_VALIDATION_PROVIDER_OVERRIDE", "openai_compatible_api")
+    assert load_config().validation_base_url == "http://localhost:11434/v1"
+    monkeypatch.setenv("PAPER_REVIEW_VALIDATION_PROVIDER_OVERRIDE", "xai_api")
+    assert load_config().validation_base_url is None
+
+
+@pytest.mark.parametrize("key, value, ok", [
+    ("max_tokens", "8k", False),
+    ("max_tokens", 0, False),
+    ("max_concurrent", 0, False),
+    ("request_delay", -0.5, False),
+    ("retry_base_delay", -1, False),
+    ("max_retries", -1, False),
+    ("max_concurrent", "true", False),
+    ("max_retries", "false", False),
+    ("request_delay", "true", False),
+    ("retry_base_delay", "false", False),
+    ("max_concurrent", ".inf", False),
+    ("request_delay", ".inf", False),
+    ("request_delay", ".nan", False),
+    ("max_retries", "'3.5'", "must be an integer"),
+    ("max_tokens", 1, True),
+    ("max_concurrent", 1, True),
+    ("request_delay", 0, True),
+    ("retry_base_delay", 0, True),
+    ("max_retries", 0, True),
+    ("max_tokens", None, True),
+])
+def test_rate_limit_config_rejects_bad_values(isolated_config, key, value, ok):
+    yaml_value = "" if value is None else f" {value}"
+    (isolated_config / "config.yaml").write_text(
+        f"llm_review:\n  provider: anthropic_api\n  {key}:{yaml_value}\n"
+    )
+    if ok is True:
+        cfg = load_config()
+        if value is None:
+            assert cfg.review_max_tokens == LLMConfig.review_max_tokens
+    else:
+        msg = ok or ".*"
+        with pytest.raises(ValueError, match=f"(?i)llm_review.{key} {msg}.*{value}"):
+            load_config()

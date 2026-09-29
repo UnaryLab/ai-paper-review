@@ -1,29 +1,34 @@
 """Per-reviewer LLM dispatch.
 
-Each selected reviewer gets one LLM call (system prompt = persona, user
-message = paper text). Calls run in parallel via ``ThreadPoolExecutor``
+Each selected reviewer gets one LLM call: the system prompt is the
+shared reviewer prompt (``prompts/shared_reviewer_system.md``), and the
+user message holds the paper PDF block (when attached), then the
+reviewer's persona prompt, then a task line or the extracted paper text
+(see :func:`_user_msg`). Calls run in parallel via ``ThreadPoolExecutor``
 with the concurrency cap from ``LLMConfig.max_concurrent``.
 
 Three layers of resilience wrap the bare LLM call:
 
-1. **Repair retry** in :func:`_call_and_parse` — one shot at re-asking
+1. **Repair retry** in :func:`_call_and_parse`: one shot at re-asking
    the LLM to fix its own malformed output.
-2. **Empty-comment retry** in :func:`_run_single_reviewer` — up to
-   :data:`EMPTY_COMMENT_RETRIES` extra attempts when parsing succeeds
-   but yields zero usable comments.
+2. **Empty-comment retry** in :func:`_run_single_reviewer`: up to
+   :data:`EMPTY_COMMENT_RETRIES` extra attempts when the output is
+   empty, unparseable, or has zero usable comments. An exception from
+   the LLM call is not re-queried: it fails that reviewer, and a
+   :class:`FatalLLMError` stops the run.
 3. **Rate-limit retry** in :class:`RetryClient` (composed by
-   :func:`make_client`) — exponential backoff on 429 / 5xx.
+   :func:`make_client`): exponential backoff on 429 / 5xx.
 """
 from __future__ import annotations
 
 import logging
 import time as _time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from ai_paper_review import prompts
-from ai_paper_review.llm.clients.base import LLMClient
-from ai_paper_review.llm.config import load_config
+from ai_paper_review.llm.clients.base import FatalLLMError, LLMClient
+from ai_paper_review.llm.config import LLMConfig, load_config
 from ai_paper_review.llm.factory import make_client
 from ai_paper_review.llm.utils import provider_supports_pdf
 
@@ -36,11 +41,13 @@ logger = logging.getLogger("review_system")
 
 # The LLM ``system`` parameter is SHARED across every review session
 # (N persona reviewers + the clarity reviewer, all on the same paper).
-# Keeping it stable lets provider-side prompt caching hit on the
-# ``(system_prompt, PDF)`` prefix: the first review seeds the cache,
-# every subsequent review reuses it. Per-reviewer differences (persona,
-# domain, lens, priorities) move into the user message, AFTER the PDF
-# block so they don't perturb the cached prefix.
+# On anthropic_api (``cache_control``), and on openai_api / google_api
+# with their own prefix caches, this lets the ``(system_prompt, PDF)``
+# prefix be cached: the first review seeds the cache, every subsequent
+# review reuses it. Per-reviewer differences (persona, domain, lens,
+# priorities) move into the user message, AFTER the PDF block so they
+# don't perturb the cached prefix. claude_sdk reads the PDF with the
+# Read tool after the user message, so it gets no shared PDF prefix.
 SHARED_REVIEWER_SYSTEM = prompts.load("shared_reviewer_system")
 
 
@@ -55,13 +62,13 @@ def _user_msg(
     start of the user message; this string is what comes AFTER it):
 
         ## Your reviewing role for this paper
-        <reviewer.system_prompt — persona expertise, lens, priorities, …>
+        <reviewer.system_prompt: persona expertise, lens, priorities, …>
 
         ---
 
         <task line: "review the attached PDF" or the paper body text>
 
-    The persona block is no longer an LLM ``system`` prompt; the
+    The persona block is part of the user message, not the LLM ``system`` prompt; the
     shared system sets the role and format constraints, and the
     per-reviewer persona sits in the user message so different
     reviewers share the cached prefix (shared system + PDF) while
@@ -90,7 +97,7 @@ def _user_msg(
 def _has_valid_comments(p: Dict[str, Any]) -> bool:
     """A review is useful only if at least one comment has summary OR
     description content. LLMs sometimes emit a rating template with
-    empty comment bodies — parsing succeeds, but there's nothing for
+    empty comment bodies: parsing succeeds, but there's nothing for
     clustering / ranking to latch onto."""
     comments = p.get("comments") or []
     if not comments:
@@ -103,6 +110,7 @@ def _call_and_parse(
     user_msg: str,
     llm: LLMClient,
     pdf_path: Optional[str] = None,
+    max_tokens: int = LLMConfig.review_max_tokens,
 ) -> Dict[str, Any]:
     """Call the LLM, parse the response, and if the output is non-empty
     but didn't produce usable comments (either a parse failure OR a
@@ -124,9 +132,10 @@ def _call_and_parse(
     # System prompt is shared across every reviewer on this paper so the
     # provider's prefix cache (Anthropic ``cache_control``, OpenAI auto
     # caching) hits on the (system + PDF) prefix across all N reviewers.
-    # The per-reviewer persona sits inside ``user_msg`` after the PDF —
+    # The per-reviewer persona sits inside ``user_msg`` after the PDF,
     # see :func:`_user_msg` for the layout.
-    raw = llm.complete(SHARED_REVIEWER_SYSTEM, user_msg, pdf_path=pdf_path)
+    raw = llm.complete(SHARED_REVIEWER_SYSTEM, user_msg,
+                       max_tokens=max_tokens, pdf_path=pdf_path)
 
     if not raw or not raw.strip():
         raise ValueError(
@@ -153,12 +162,13 @@ def _call_and_parse(
                   f"summary/description content")
     logger.warning(
         "Reviewer %s: %s. Running markdown-repair prompt on raw output "
-        "(%d chars) — prioritized over a full re-query. First 300: %s",
+        "(%d chars): prioritized over a full re-query. First 300: %s",
         reviewer.id, reason, len(raw), raw[:300],
     )
-    repair_prompt = prompts.load("markdown_repair_user", raw_output=raw[:8000])
-    # Repair pass is pure text-format fixing — don't re-attach the PDF.
-    raw2 = llm.complete(prompts.load("markdown_repair_system"), repair_prompt)
+    repair_prompt = prompts.load("markdown_repair_user", raw_output=raw)
+    # Repair pass is pure text-format fixing: don't re-attach the PDF.
+    raw2 = llm.complete(prompts.load("markdown_repair_system"), repair_prompt,
+                        max_tokens=max_tokens)
     repaired = _parse_llm_output(raw2)
     # Tag so the pipeline can count how many reviewers needed a
     # markdown-repair pass to produce usable output. Surfaced in the
@@ -174,6 +184,7 @@ def _run_single_reviewer(
     paper: Dict[str, str],
     llm: LLMClient,
     pdf_path: Optional[str] = None,
+    max_tokens: int = LLMConfig.review_max_tokens,
 ) -> Dict[str, Any]:
     user_msg = _user_msg(reviewer, paper, pdf_path)
     try:
@@ -184,11 +195,14 @@ def _run_single_reviewer(
         # failed do we fall through to this outer loop's full re-query.
         def _attempt() -> Optional[Dict[str, Any]]:
             try:
-                return _call_and_parse(reviewer, user_msg, llm, pdf_path=pdf_path)
-            except Exception as e:
+                return _call_and_parse(reviewer, user_msg, llm, pdf_path=pdf_path,
+                                       max_tokens=max_tokens)
+            except ValueError as e:
+                # Empty or unparseable output. Errors from the LLM call
+                # itself propagate: RetryClient already retried them.
                 logger.warning(
-                    "Reviewer %s: parse/call failed on this attempt — "
-                    "will retry. (%s)", reviewer.id, e,
+                    "Reviewer %s: empty or unparseable output on this "
+                    "attempt, will retry. (%s)", reviewer.id, e,
                 )
                 return None
 
@@ -211,7 +225,7 @@ def _run_single_reviewer(
 
         if parsed is None or not _has_valid_comments(parsed):
             logger.warning(
-                "Reviewer %s: still no valid comments after %d retries — "
+                "Reviewer %s: still no valid comments after %d retries: "
                 "giving up, this reviewer will contribute 0 comments to "
                 "clustering.",
                 reviewer.id, EMPTY_COMMENT_RETRIES,
@@ -229,7 +243,7 @@ def _run_single_reviewer(
             if n_with_summary < n_total or n_with_desc < n_total:
                 logger.warning(
                     "Reviewer %s: parsed %d comments but only %d have summary and "
-                    "%d have description. Clustering quality will suffer — likely "
+                    "%d have description. Clustering quality will suffer: likely "
                     "the LLM's comment format deviates from the expected "
                     "`- **Summary:** ...` pattern. First comment: %r",
                     reviewer.id, n_total, n_with_summary, n_with_desc,
@@ -243,6 +257,8 @@ def _run_single_reviewer(
         parsed["_persona"] = reviewer.persona
         parsed["_domain"] = reviewer.domain
         return parsed
+    except FatalLLMError:
+        raise
     except Exception as e:
         logger.error("Reviewer %s failed: %s", reviewer.id, e)
         return {
@@ -265,78 +281,108 @@ def node_run_reviewers(
     every dispatch and completion. ``event`` is ``"dispatched"`` or
     ``"done"``. The web UI uses this to update the status page in real time.
     """
-    cfg = load_config()
-    if state.get("llm_provider"):
-        cfg.review_provider = state["llm_provider"]
-    if state.get("llm_model"):
-        cfg.review_model = state["llm_model"]
+    cfg = state.get("llm_config") or load_config()
+    cfg.set_review_llm(state.get("llm_provider"), state.get("llm_model"))
     llm = make_client(cfg, use_case="review")
 
-    # PDF-native providers (Anthropic, OpenAI, Google, Claude SDK) get
-    # the PDF itself; text-only ones (xAI, GitHub Models, openai_compatible,
-    # Copilot SDK) fall back to the pre-extracted paper text in state["paper"].
+    # PDF-capable provider + endpoint pairs (see provider_supports_pdf)
+    # get the PDF itself; the rest use the extracted text in state["paper"].
     pdf_path = (
         state.get("pdf_path")
-        if provider_supports_pdf(cfg.review_provider)
+        if provider_supports_pdf(cfg.review_provider,
+                                 cfg.resolve_base_url_for_stage("review"))
         else None
     )
 
     n_selected = len(state["selected"])
-    logger.info("Review LLM: provider=%s model=%s — running %d reviewers "
+    delay = cfg.request_delay_for(cfg.review_provider)
+    logger.info("Review LLM: provider=%s model=%s: running %d reviewers "
                 "(max_concurrent=%d, delay=%.1fs, retries=%d, pdf_input=%s)",
                 cfg.review_provider, llm.model, n_selected,
-                cfg.max_concurrent, cfg.request_delay, cfg.max_retries,
+                cfg.max_concurrent, delay, cfg.max_retries,
                 "yes" if pdf_path else "no")
 
-    results: List[Dict[str, Any]] = []
+    results: List[Tuple[int, Dict[str, Any]]] = []
     done_count = 0
 
-    with ThreadPoolExecutor(max_workers=cfg.max_concurrent) as ex:
-        futs = {}
-        for i, (r, _score) in enumerate(state["selected"]):
-            if i > 0 and cfg.request_delay > 0:
-                _time.sleep(cfg.request_delay)
-            fut = ex.submit(_run_single_reviewer, r, state["paper"], llm, pdf_path)
-            futs[fut] = (i, r)
-            logger.info("Dispatched reviewer %d/%d: %s (%s)",
-                        i + 1, n_selected, r.id, r.persona)
-            if on_progress:
-                on_progress({
-                    "current": i + 1,
-                    "total": n_selected,
-                    "reviewer_id": r.id,
-                    "persona": r.persona,
-                    "event": "dispatched",
-                    "n_comments": 0,
-                })
+    try:
+        with ThreadPoolExecutor(max_workers=cfg.max_concurrent) as ex:
+            futs = {}
+            for i, (r, _score) in enumerate(state["selected"]):
+                if i > 0:
+                    # Stop dispatching once a reviewer hit a fatal error.
+                    for f in futs:
+                        if f.done() and isinstance(f.exception(), FatalLLMError):
+                            ex.shutdown(wait=False, cancel_futures=True)
+                            raise f.exception()
+                    if delay > 0:
+                        _time.sleep(delay)
+                fut = ex.submit(_run_single_reviewer, r, state["paper"], llm, pdf_path,
+                                cfg.review_max_tokens)
+                futs[fut] = (i, r)
+                logger.info("Dispatched reviewer %d/%d: %s (%s)",
+                            i + 1, n_selected, r.id, r.persona)
+                if on_progress:
+                    on_progress({
+                        "current": i + 1,
+                        "total": n_selected,
+                        "reviewer_id": r.id,
+                        "persona": r.persona,
+                        "event": "dispatched",
+                        "n_comments": 0,
+                    })
 
-        for fut in as_completed(futs):
-            _i, r = futs[fut]
-            rv = fut.result()
-            results.append(rv)
-            done_count += 1
-            n_comments = len(rv.get("comments", []))
-            logger.info("Completed reviewer %d/%d: %s (%s) — %d comments",
-                        done_count, n_selected, r.id, r.persona, n_comments)
-            if on_progress:
-                on_progress({
-                    "current": done_count,
-                    "total": n_selected,
-                    "reviewer_id": r.id,
-                    "persona": r.persona,
-                    "event": "done",
-                    "n_comments": n_comments,
-                })
+            try:
+                for fut in as_completed(futs):
+                    i, r = futs[fut]
+                    rv = fut.result()
+                    results.append((i, rv))
+                    done_count += 1
+                    n_comments = len(rv.get("comments", []))
+                    logger.info("Completed reviewer %d/%d: %s (%s): %d comments",
+                                done_count, n_selected, r.id, r.persona, n_comments)
+                    if on_progress:
+                        on_progress({
+                            "current": done_count,
+                            "total": n_selected,
+                            "reviewer_id": r.id,
+                            "persona": r.persona,
+                            "event": "done",
+                            "n_comments": n_comments,
+                        })
+            except Exception:
+                # Drop queued reviewers instead of running them before raising.
+                ex.shutdown(wait=False, cancel_futures=True)
+                raise
+    finally:
+        cleanup = getattr(llm, "cleanup_uploaded_files", None)
+        if cleanup is not None:
+            cleanup()
+
+    # Selection order, not completion order, so clustering is repeatable.
+    results = [rv for _i, rv in sorted(results, key=lambda t: t[0])]
+
+    if results and all(rv.get("error") for rv in results):
+        raise RuntimeError(
+            f"All {len(results)} reviewers failed; first error: "
+            f"{results[0]['error']}"
+        )
 
     state["raw_reviews"] = results
 
     flat: List[Dict[str, Any]] = []
     for rv in results:
         for c in rv.get("comments", []):
+            if not (c.get("summary") or c.get("description")):
+                continue
             c["_reviewer_id"] = rv["_reviewer_id"]
             c["_persona"] = rv["_persona"]
             c["_domain"] = rv["_domain"]
             flat.append(c)
+    if not flat:
+        raise RuntimeError(
+            f"No usable comments from {len(results)} reviewers."
+        )
     state["all_comments"] = flat
     logger.info("Collected %d comments from %d reviewers", len(flat), len(results))
     return state

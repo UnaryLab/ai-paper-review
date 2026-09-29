@@ -97,7 +97,7 @@
       <tbody>
         {% for r in data.selected | sort(attribute='id') %}
           <tr>
-            <td><a href="{{ url_for('reviewer_detail', rid=r.id) }}"><code>{{ r.id }}</code></a></td>
+            <td><a href="{{ url_for('databases_reviewer_detail', name=data.database_id or '__default__', rid=r.id) }}"><code>{{ r.id }}</code></a></td>
             <td>{{ r.domain }}</td>
             <td>{{ r.persona }}</td>
             <td>{{ "%.3f"|format(r.score) }}</td>
@@ -263,10 +263,10 @@
             <summary>{{ c.members|length - 1 }} other reviewer{{ 's' if c.members|length - 1 != 1 }} raised the same issue</summary>
             <ul class="alt-phrasings">
               {% for m in c.members %}
-                {% if m is not sameas rep %}
+                {% if m != rep %}
                   <li>
                     <div class="alt-phrasing-head">
-                      <a href="{{ url_for('reviewer_detail', rid=m._reviewer_id) }}"
+                      <a href="{{ url_for('databases_reviewer_detail', name=data.database_id or '__default__', rid=m._reviewer_id) }}"
                          title="View this reviewer's persona / system prompt"><code>{{ m._reviewer_id }}</code></a>
                       <span>({{ m._persona }})</span>
                       <span class="sev sev-{{ m.severity or 'minor' }}">{{ (m.severity or 'minor')|upper }}</span>

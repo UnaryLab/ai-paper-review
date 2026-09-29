@@ -35,7 +35,7 @@ dependencies = [
     "openai>=1.50.0",
     "google-genai>=0.3.0",
     "github-copilot-sdk>=0.1.0",
-    "claude-agent-sdk>=0.1.0",
+    "claude-agent-sdk>=0.1.60",
     "markitdown[pdf]>=0.0.1",
 ]
 
@@ -62,8 +62,8 @@ Issues     = "https://github.com/unarylab/ai-paper-review/issues"
 [tool.hatch.build.targets.wheel]
 packages = ["src/ai_paper_review"]
 # Hatch's package discovery already includes every file under
-# `src/ai_paper_review/` — including the bundled `data/*.md`,
-# `data/*.yaml`, and `prompts/*.md`. Do NOT add a
+# `src/ai_paper_review/`, including the bundled `database/*.md`,
+# `database/*.yaml`, and `prompts/*.md`. Do NOT add a
 # `[tool.hatch.build.targets.wheel.force-include]` block re-targeting
 # those paths: PyPI now rejects wheels with duplicate ZIP entries
 # (https://docs.pypi.org/project_metadata/#duplicate-filenames-in-zip-archives).
@@ -71,7 +71,6 @@ packages = ["src/ai_paper_review"]
 [tool.hatch.build.targets.sdist]
 include = [
     "src/ai_paper_review",
-    "examples",
     "docs",
     "tests",
     "config.example.yaml",

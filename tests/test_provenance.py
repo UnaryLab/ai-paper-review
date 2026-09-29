@@ -14,13 +14,13 @@ from ai_paper_review.provenance import format_provenance, now_iso
 def test_format_provenance_llm_stage():
     block = format_provenance(
         provider="anthropic_api",
-        model="claude-sonnet-4-5-20250929",
+        model="claude-opus-5-5",
         base_url=None,
         launched_at="2026-04-23T02:35:00+00:00",
         ended_at="2026-04-23T02:42:17+00:00",
     )
     assert "<!-- provenance -->" in block
-    assert "`anthropic_api` / `claude-sonnet-4-5-20250929`" in block
+    assert "`anthropic_api` / `claude-opus-5-5`" in block
     assert "(default)" in block  # base_url=None rendered
     assert "2026-04-23T02:35:00+00:00" in block
     assert "2026-04-23T02:42:17+00:00" in block
@@ -48,7 +48,7 @@ def test_format_provenance_includes_format_fix_retries():
     rather than inline in the report body."""
     block = format_provenance(
         provider="anthropic_api",
-        model="claude-sonnet-4-5-20250929",
+        model="claude-opus-5-5",
         base_url=None,
         launched_at="2026-04-23T02:35:00+00:00",
         ended_at="2026-04-23T02:37:30+00:00",
@@ -65,7 +65,7 @@ def test_format_provenance_omits_retries_line_when_not_given():
     concept, so the line must not render when the kwargs are absent."""
     block = format_provenance(
         provider="anthropic_api",
-        model="claude-sonnet-4-5-20250929",
+        model="claude-opus-5-5",
         base_url=None,
         launched_at="2026-04-23T02:35:00+00:00",
         ended_at="2026-04-23T02:37:30+00:00",
@@ -157,6 +157,38 @@ def test_validation_report_body_omits_provenance_fields():
     assert "**Venue:** TestConf" in md
 
 
+def test_validation_report_carries_provenance(config_with_openai, fixtures_dir,
+                                              tmp_path, monkeypatch):
+    """The validate CLI prepends the provenance block to its report.
+    Stubs the LLM client and aligner so no LLM call runs."""
+    import sys
+    import ai_paper_review.llm.factory as factory
+    import ai_paper_review.validation.validation as validation_mod
+
+    monkeypatch.setattr(factory, "make_client", lambda cfg, use_case=None: object())
+    monkeypatch.setattr(validation_mod, "align_comments", lambda *a, **k: {
+        "hits": [], "misses": [], "false_alarms": [],
+        "n_actual": 0, "n_ai": 0, "n_strengths": 0,
+    })
+    out = tmp_path / "validation_report.md"
+    monkeypatch.setattr(sys, "argv", [
+        "ai-paper-review-validate",
+        "--actual", str(fixtures_dir / "actual.md"),
+        "--ai-review", str(fixtures_dir / "ai.md"),
+        "--out", str(out),
+        "--calibration-out", str(tmp_path / "calibration.json"),
+    ])
+    validation_mod.main()
+
+    body = out.read_text()
+    assert body.startswith("<!-- provenance -->"), (
+        f"validation_report.md missing provenance header. "
+        f"First 200 chars: {body[:200]!r}"
+    )
+    assert "**Launched:**" in body
+    assert "**Ended:**" in body
+
+
 def test_alignment_artifacts_do_not_carry_provenance(tmp_path):
     """Validation's debugging artifacts (the three alignment_*.md
     files) must NOT carry a provenance block — the run metadata banner
@@ -171,7 +203,7 @@ def test_alignment_artifacts_do_not_carry_provenance(tmp_path):
     _write_batch_artifacts(
         tmp_path, actual, ai, sims,
         raw_response="0.9", n_parsed=1,
-        llm_model="claude-sonnet-4-5-20250929",
+        llm_model="claude-opus-5-5",
     )
     for name in ("alignment_llm_analysis.md",
                  "alignment_similarities.md",

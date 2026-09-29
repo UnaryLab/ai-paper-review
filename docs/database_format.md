@@ -207,13 +207,13 @@ See `src/ai_paper_review/database/comparch_reviewer_cfg.yaml` and `src/ai_paper_
 
 ### Reviewer count
 
-The runtime reviewer count is `len(domains) × len(personas)`. With 10 domains and 20 personas you get 200 reviewers. There's no hard limit on database size; the selector picks the top N by similarity for each paper, where N is chosen by the user per run (default 10, recommended range 5–10 to balance coverage against cost, hard range 1–20). Database size mostly affects how well-targeted the selection is — a larger DB means more candidates to diversify across, not more reviewers emitted per run.
+The runtime reviewer count is `len(domains) × len(personas)`. With 10 domains and 20 personas you get 200 reviewers. A database holds at most 999 reviewers, since reviewer IDs run `R001`–`R999`; the generator rejects configs that define more. The selector picks the top N by similarity for each paper, where N is chosen by the user per run (default 10, recommended range 5–10 to balance coverage against cost, hard range 1–20). Database size mostly affects how well-targeted the selection is: a larger DB means more candidates to diversify across, not more reviewers emitted per run.
 
 ### Design guidance
 
-- **Keep domain keywords specific.** The selector uses these to match a paper's extracted keywords against each reviewer's domain. Generic terms (e.g. "research", "analysis") dilute the matching; specific technical terms (tools, methods, algorithms, datasets) make it work well.
+- **Keep domain keywords specific.** The selector embeds each reviewer's keyword profile and compares it with the paper's title, abstract, and opening text. Generic terms (e.g. "research", "analysis") dilute the matching; specific technical terms (tools, methods, algorithms, datasets) make it work well.
 - **Tailor personas to your field.** The reviewing concerns that matter for computer architecture (silicon feasibility, energy, deployment, formal methods) differ from those that matter for ML/AI (data quality, benchmark contamination, ablation analysis, scaling, ethics). Copy the bundled config closest to your discipline and adapt the personas rather than using a generic set.
-- **Priorities should be questions, not statements.** Each priority is prepended with "You ask:" in the generated system prompt, so phrase them as things the reviewer checks.
+- **Priorities should be questions, not statements.** The first five priorities become the numbered "Core questions you always ask" list in the generated system prompt, so phrase them as things the reviewer checks.
 
 ---
 
@@ -345,6 +345,8 @@ Inside each block it extracts these fields, matching on the `- **Label:**` prefi
 
 The parser is lenient about whitespace and blank lines between these but strict about the labels — each must appear with the exact `**Label:**` bolding and colon, on its own line starting with `- `. Missing labels don't raise an error; the corresponding `Reviewer` field is just left at its default (empty string for text fields, empty list for `Keywords`). A reviewer block missing the `- **System Prompt:**` line followed by a fenced ```text``` block is skipped entirely with a warning (no system prompt = no runnable reviewer).
 
+A line that is exactly `---` ends the reviewer entry unless it is inside the prompt's fenced ```text``` block. A `---` line inside a fenced block nested within the prompt (the output template) also ends the entry, so the output template must not contain such a line.
+
 ### Validation attribution tables — parser-relevant detail
 
 Section 7 of the DB markdown carries a single fenced ```yaml``` block with three keys that control the validation calibration step:
@@ -361,7 +363,7 @@ Lowercase is the canonical form for the keys on both maps; `category_vocab` is t
 
 ### The system prompt
 
-The `text` fenced block after `- **System Prompt:**` is passed verbatim as the `system_prompt` to the LLM when this reviewer runs. Its content is entirely up to you; the default database templates it as:
+The `text` fenced block after `- **System Prompt:**` is passed verbatim to the LLM when this reviewer runs, in the user message under a `## Your reviewing role for this paper` heading. The LLM system prompt is the shared reviewer prompt (`src/ai_paper_review/prompts/shared_reviewer_system.md`), the same for every reviewer. The reviewer block's content is entirely up to you; the default database templates it as:
 
 ```text
 You are **Reviewer R042**, an expert peer reviewer for computer architecture research,
@@ -426,12 +428,12 @@ Once you have a `.md` file in the right shape:
 - **Filesystem**: drop the `.md` into `{workdir}/databases/` (the path is shown on the Databases page).
 - **CLI**: pass `--db path/to/my.md` to `ai-paper-review-review`.
 
-After upload, the new database appears in the **Reviewer database** dropdown on the home page.
+After upload, the new database appears in the **Reviewer database** dropdown on the review page (`/review`).
 
 ### Filename handling
 
-- The **filename you upload is kept verbatim** (any directory components are stripped). It becomes the database's ID both in the home-page dropdown and in URLs — e.g. uploading `bio.md` makes it selectable as `bio.md`, viewable at `/database/bio.md/view`, and deletable via `/database/bio.md/delete`.
-- The filename **must end in `.md`**. Names containing `/`, `\`, `..`, or starting with `.` are rejected.
+- The **filename you upload is sanitized** with Werkzeug's `secure_filename`: directory components are dropped, spaces become `_`, and non-ASCII and other unsafe characters are removed (an empty result becomes `upload.md`). The sanitized name becomes the database's ID both in the `/review` dropdown and in URLs, e.g. uploading `bio.md` makes it selectable as `bio.md`, viewable at `/database/bio.md/view`, and deletable via `/database/bio.md/delete`.
+- The filename **must end in `.md`**.
 - Uploading a file with the **same name** as an existing user database **overwrites** it (after the new file parses successfully — otherwise the existing one is left untouched).
 - The reserved ID **`__default__`** always points at the bundled Computer Architecture database. You cannot upload a file named `__default__`.
 - The **label** shown in the UI (dropdown text and the database table) is built as `"<title-from-first-# heading>  (<filename>)"`. So a file named `bio.md` whose first heading is `# Molecular Biology Paper Review System — Reviewer Database` appears as `"Molecular Biology Paper Review System — Reviewer Database  (bio.md)"`. If the heading can't be parsed, the filename stem is used as a fallback.
@@ -466,7 +468,7 @@ Edit:
 1. `field:` — your discipline name.
 2. `domains:` — replace with 8–15 sub-areas for your field. Keep the same entry shape (`id`, `name`, `short`, `description`, `keywords`, `venues`). Aim for 20–30 specific technical keywords per domain.
 3. `personas:` — replace with 20 personas tailored to your field's reviewing concerns. Use the comparch and ML/AI configs as reference for the entry shape.
-4. `validation_attribution:` — update `category_vocab`, `category_to_persona`, and `sub_rating_to_persona` to match your new personas. See §1.4 for the full spec.
+4. `validation_attribution:`: update `category_vocab`, `category_to_persona`, and `sub_rating_to_persona` to match your new personas. See [Validation attribution entry](#validation-attribution-entry) for the full spec.
 
 ### Step 2 — generate the reviewer-database markdown
 
@@ -478,7 +480,7 @@ ai-paper-review-generate-db \
     --out    my_field.md
 ```
 
-The command prints the output path, file size, and reviewer count on success. If `--out` is omitted the file is written to `./<field-slug>_reviewer_db.md` in the current directory.
+The command prints the output path, file size, and reviewer count on success. A malformed config (missing top-level key, wrong type, or a domain or persona entry missing a required key) or one that defines more than 999 reviewers exits with status 1 and an error message naming the offending key. If `--out` is omitted the file is written to `./<field-slug>_reviewer_db.md` in the current directory.
 
 ### Step 3 — upload and test
 
@@ -488,4 +490,4 @@ After upload, run a test review against a sample paper from the discipline to sa
 
 ### A note on programmatic vs hand-authored databases
 
-A database that's purely templated from a YAML config will have 10×20 = 200 nearly-identical system prompts that differ only in domain name and persona focus. That's fine for a first pass, but the bundled Computer Architecture database has hand-tuned prompts with domain-specific anchoring ("Check whether the paper quantifies SRAM vs DRAM energy trade-offs…") that a pure template can't produce. If you want that level of polish, plan to hand-edit individual reviewer blocks after generation — and remember that each reviewer block is self-contained, so editing one doesn't affect the others.
+A database generated from a YAML config has one system prompt per domain × persona pair, all filled from the same template, so they differ only in the domain and persona fields. The bundled databases are generated this way. For domain-specific anchoring ("Check whether the paper quantifies SRAM vs DRAM energy trade-offs…"), hand-edit individual reviewer blocks after generation, and remember that each reviewer block is self-contained, so editing one doesn't affect the others.

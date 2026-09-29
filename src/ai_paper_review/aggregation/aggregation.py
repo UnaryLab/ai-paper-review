@@ -74,7 +74,10 @@ def aggregate(deltas: List[Dict[str, Any]]) -> List[SuggestionAgg]:
     """Group suggestions by (type, target) across papers and count support."""
     bucket: Dict[Tuple[str, str], SuggestionAgg] = {}
     for d in deltas:
-        paper_id = d.get("paper_id") or Path(d.get("_path", "?")).stem
+        src = Path(d.get("_path", "?"))
+        paper_id = d.get("paper_id") or (
+            src.parent.name if src.name == "calibration_delta.json" else src.stem
+        )
         for s in d.get("suggestions", []):
             stype = s.get("type")
             # Determine the target — different types key on different fields.
@@ -92,8 +95,9 @@ def aggregate(deltas: List[Dict[str, Any]]) -> List[SuggestionAgg]:
             if key not in bucket:
                 bucket[key] = SuggestionAgg(type=stype, target=target, support=0)
             agg = bucket[key]
-            agg.support += 1
-            agg.paper_ids.append(paper_id)
+            if paper_id not in agg.paper_ids:
+                agg.support += 1
+                agg.paper_ids.append(paper_id)
             agg.rationales.append(s.get("rationale", ""))
             agg.example_misses.extend(s.get("example_misses", []))
             for k, v in s.items():
@@ -101,7 +105,7 @@ def aggregate(deltas: List[Dict[str, Any]]) -> List[SuggestionAgg]:
                              "example_misses", "missing_personas_in_selection"}:
                     agg.extra.setdefault(k, []).append(v)
 
-    # Stable order: by support desc, then by target
+    # Stable order: by support desc, then by type, then by target
     return sorted(bucket.values(), key=lambda a: (-a.support, a.type, a.target))
 
 
@@ -131,11 +135,12 @@ def render_changelog(
     applied = [c for c in changelog if c.get("status") == "recommended"]
     manual = [c for c in changelog if c.get("status") == "manual_review_required"]
     skipped = [c for c in changelog if c.get("status", "").startswith(("noop", "skipped", "unknown"))]
+    under_threshold = [s for s in suggestions if s.support < min_support]
 
     lines.append("## Summary\n\n")
     lines.append(f"- Recommended actions: **{len(applied)}**\n")
     lines.append(f"- Needs manual review: **{len(manual)}**\n")
-    lines.append(f"- Skipped / no-op: **{len(skipped)}**\n\n")
+    lines.append(f"- Skipped / no-op: **{len(skipped) + len(under_threshold)}**\n\n")
 
     if applied:
         lines.append("## Recommendations\n\n")
@@ -157,11 +162,8 @@ def render_changelog(
             lines.append(f"- **Support:** {c['support']} paper(s): {', '.join(c['paper_ids'])}\n")
             lines.append(f"- **Recommendation:** {c['recommendation']}\n\n")
 
-    if skipped:
+    if skipped or under_threshold:
         lines.append("## Skipped (below threshold or already present)\n\n")
-        under_threshold = [
-            s for s in suggestions if s.support < min_support
-        ]
         for s in under_threshold[:20]:
             lines.append(f"- [{s.type}] → {s.target} (support={s.support})\n")
         lines.append("\n")
@@ -200,6 +202,14 @@ def recommendation_text(agg: SuggestionAgg) -> str:
             "adding a new persona to the `personas:` list in your config "
             "YAML, then rebuild the reviewer database (see "
             "docs/database_format.md)."
+        )
+    if agg.type == "sub_rating_signal":
+        sub_ratings = sorted(set(agg.extra.get("sub_rating", [])))
+        return (
+            f"Human reviewers repeatedly gave low '{', '.join(sub_ratings)}' "
+            f"sub-rating(s) that map to persona '{agg.target}'. Consider "
+            "strengthening its `priorities` in your reviewer-config YAML, or "
+            "check that it gets selected when those weaknesses appear."
         )
     return f"Unknown suggestion type: {agg.type}"
 

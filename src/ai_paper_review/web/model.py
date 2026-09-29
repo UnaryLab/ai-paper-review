@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from urllib.parse import urlparse
 
 from flask import flash, redirect, render_template, request, url_for
 
@@ -16,7 +17,12 @@ from ai_paper_review.llm.config import (
     _VALIDATION_INHERIT_SENTINEL,
     load_config,
 )
-from ai_paper_review.llm.probing import describe_config, probe_providers
+from ai_paper_review.llm.probing import (
+    _PROVIDER_LABELS,
+    _UI_PROVIDERS,
+    describe_config,
+    probe_providers,
+)
 
 from .app import app
 
@@ -38,13 +44,27 @@ _MODEL_OVERRIDE_ENVS = {
 def model_settings():
     try:
         cfg = load_config()
-        providers = probe_providers()
-        status = describe_config(cfg)
     except Exception as e:
-        flash(f"Could not load config: {e}")
+        # ValueError from load_config is already flashed by the app-wide
+        # context processor.
+        if not isinstance(e, ValueError):
+            flash(f"Could not load config: {e}")
         cfg = None
-        providers = []
-        status = {}
+    providers = []
+    status = {}
+    if cfg:
+        try:
+            providers = probe_providers(cfg)
+            status = describe_config(cfg)
+        except Exception as e:
+            flash(f"Could not probe providers: {e}")
+            providers = []
+            status = {}
+    # The provider selects need options even when probing failed, or the
+    # required select blocks every submit.
+    provider_options = providers or [
+        {"name": p, "label": _PROVIDER_LABELS.get(p, p)} for p in _UI_PROVIDERS
+    ]
 
     config_path = (cfg.config_path if (cfg and cfg.config_path)
                    else str(Path.cwd() / "config.yaml"))
@@ -72,6 +92,7 @@ def model_settings():
         "model_settings.html",
         cfg=cfg,
         providers=providers,
+        provider_options=provider_options,
         status=status,
         config_path=config_path,
         overrides_active=overrides_active,
@@ -117,12 +138,45 @@ def model_settings_apply():
     # review stage at resolve time — otherwise a blank validation
     # field would silently revert to ``config.yaml``'s
     # ``llm_validation`` block, which is the opposite of what the
-    # "— inherit from review —" dropdown implies.
+    # "(inherit from review provider)" dropdown implies.
     _VALIDATION_FIELDS = {
         "validation_provider", "validation_model", "validation_base_url",
     }
+    for field in ("review_base_url", "validation_base_url"):
+        url = (request.form.get(field) or "").strip()
+        if not url:
+            continue
+        try:
+            parsed = urlparse(url)
+            ok = parsed.scheme in ("http", "https") and bool(parsed.hostname)
+        except ValueError:
+            ok = False
+        if not ok:
+            flash(f"Invalid {field.replace('_', ' ')}: {url!r}. "
+                  "Use an http:// or https:// URL with a host.")
+            return redirect(url_for("model_settings"))
+
+    # The base URL fields are prefilled with the current values, so after
+    # a provider switch the old provider's URL comes back as if typed.
+    # Drop a posted URL that just echoes the current one for a changed
+    # provider.
+    try:
+        cur = load_config()
+    except Exception:
+        cur = None
+    stale_fields = set()
+    if cur:
+        if review_provider != cur.resolve_provider("review"):
+            stale_fields.add("review_base_url")
+        new_val_provider = validation_provider or review_provider
+        if new_val_provider != cur.resolve_provider("validation"):
+            stale_fields.add("validation_base_url")
+
     for field, env in _MODEL_OVERRIDE_ENVS.items():
         val = (request.form.get(field) or "").strip()
+        if field in stale_fields and val == (
+                cur.resolve_base_url_for_stage(field.split("_")[0]) or ""):
+            val = ""
         if val:
             os.environ[env] = val
         elif field in _VALIDATION_FIELDS:

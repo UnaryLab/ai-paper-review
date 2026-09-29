@@ -31,13 +31,20 @@ def load_actual(path: str | Path) -> Dict[str, Any]:
     treat the structure uniformly.
     """
     data = load_reviews_file(path)
-    if "actual_reviews" not in data:
+    if not data.get("actual_reviews"):
         raise ValueError("actual reviews file must contain reviews (found none)")
 
     flat_comments: List[Dict[str, Any]] = []
     flat_strengths: List[Dict[str, Any]] = []
+    seen_rids: set = set()
     for ri, rv in enumerate(data["actual_reviews"]):
         label = rv.get("reviewer_label") or rv.get("reviewer_id") or f"R{ri+1}"
+        rv["reviewer_label"] = label
+        # Parsed comment ids are "<reviewer_id>-C<n>", so an empty or
+        # repeated reviewer id would collide; use positional ids then.
+        rid = rv.get("reviewer_id") or ""
+        positional = not rid or rid in seen_rids
+        seen_rids.add(rid)
 
         # Fill any missing optional fields with empty defaults
         rv.setdefault("recommendation_raw", None)
@@ -49,7 +56,8 @@ def load_actual(path: str | Path) -> Dict[str, Any]:
         rv.setdefault("strengths", [])
 
         for ci, c in enumerate(rv.get("comments", [])):
-            cid = c.get("comment_id") or f"ACTUAL-{ri+1}-{ci+1}"
+            cid = (None if positional else c.get("comment_id")) \
+                or f"ACTUAL-{ri+1}-{ci+1}"
             flat_comments.append(
                 {
                     "id": cid,
@@ -71,6 +79,8 @@ def load_actual(path: str | Path) -> Dict[str, Any]:
                 }
             )
 
+    if not flat_comments:
+        raise ValueError("actual reviews file contains no comments")
     data["flat_comments"] = flat_comments
     data["flat_strengths"] = flat_strengths
     return data
@@ -81,6 +91,8 @@ def load_ai(path: str | Path) -> Dict[str, Any]:
     text = Path(path).read_text()
     data = parse_multi_review_markdown(text)
     # Map parsed reviews to the raw_reviews format with _reviewer_id keys
+    if not data.get("actual_reviews"):
+        raise ValueError("AI review file must contain reviews (found none)")
     raw_reviews = []
     for rv in data.get("actual_reviews", []):
         raw_reviews.append({
@@ -99,11 +111,16 @@ def load_ai(path: str | Path) -> Dict[str, Any]:
 
     # Flatten AI comments from raw_reviews for downstream alignment.
     flat: List[Dict[str, Any]] = []
-    for rv in data.get("raw_reviews", []):
-        for c in rv.get("comments", []):
+    seen_rids: set = set()
+    for ri, rv in enumerate(data.get("raw_reviews", [])):
+        rid = rv.get("_reviewer_id") or ""
+        positional = not rid or rid in seen_rids
+        seen_rids.add(rid)
+        for ci, c in enumerate(rv.get("comments", [])):
             flat.append(
                 {
-                    "id": c.get("comment_id", f"AI-{rv.get('_reviewer_id','?')}-?"),
+                    "id": (f"AI-{ri+1}-{ci+1}" if positional
+                           else c.get("comment_id", f"AI-{rid}-?")),
                     "reviewer_id": rv.get("_reviewer_id"),
                     "persona": rv.get("_persona"),
                     "domain": rv.get("_domain"),
@@ -115,5 +132,7 @@ def load_ai(path: str | Path) -> Dict[str, Any]:
                     "keywords": c.get("keywords", []),
                 }
             )
+    if not flat:
+        raise ValueError("AI review file contains no comments")
     data["flat_comments"] = flat
     return data

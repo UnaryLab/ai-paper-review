@@ -17,6 +17,7 @@ weaker extraction.
 """
 from __future__ import annotations
 
+import copy
 import logging
 import re
 from typing import Any, Dict, Optional
@@ -51,6 +52,7 @@ def llm_extract(
     provider_override: Optional[str] = None,
     model_override: Optional[str] = None,
     run_dir: Optional[Any] = None,
+    llm_config: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """Extract structured review data from unstructured human review text
     using the configured LLM.
@@ -68,6 +70,10 @@ def llm_extract(
     callers (e.g. the web UI) pick a provider for a single conversion
     without mutating global state.
 
+    When ``llm_config`` is provided, the client is built from a shallow
+    copy of it and ``config.yaml`` is not read; the overrides are applied
+    to the copy, so the caller's object is unchanged.
+
     When ``run_dir`` is provided, the LLM's raw output is written to
     ``run_dir/actual_raw_llm.md`` *before* parsing, so users can inspect
     the model's literal response if the downstream parse fails or the
@@ -78,7 +84,7 @@ def llm_extract(
     """
     from ai_paper_review.llm.config import load_config
     from ai_paper_review.llm.factory import make_client
-    cfg = load_config()
+    cfg = copy.copy(llm_config) if llm_config is not None else load_config()
     if provider_override:
         cfg.validation_provider = provider_override
     if model_override:
@@ -199,9 +205,17 @@ def parse_llm_markdown(raw: str) -> Dict[str, Any]:
         clean = re.sub(r"[^A-Za-z0-9]+", "_", str(raw_id)).strip("_")
         return clean or fallback
 
+    seen_ids: set = set()
     for ri, rv in enumerate(parsed.get("actual_reviews", [])):
         original_label = rv.get("reviewer_id") or f"Reviewer_{ri+1}"
         safe_id = _sanitize_id(original_label, f"Reviewer_{ri+1}")
+        # Distinct labels can sanitize to the same id; suffix repeats so
+        # comment ids stay unique.
+        base_id, n = safe_id, 2
+        while safe_id in seen_ids:
+            safe_id = f"{base_id}_{n}"
+            n += 1
+        seen_ids.add(safe_id)
         rv["reviewer_id"] = safe_id
         rv["reviewer_label"] = safe_id
 

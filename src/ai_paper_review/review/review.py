@@ -24,6 +24,8 @@ import os
 from pathlib import Path
 from typing import Any, Dict, List, Tuple, TypedDict
 
+from ai_paper_review.llm.config import SUPPORTED_PROVIDERS
+
 from .clarity import node_run_clarity_review
 from .clustering import node_cluster_comments
 from .constants import (
@@ -70,6 +72,9 @@ class ReviewState(TypedDict, total=False):
     # web-UI jobs can't race each other.
     llm_provider: str
     llm_model: str
+    # Config loaded at submit by the web worker; nodes use it instead of
+    # reloading from disk, so a mid-run Model-page change has no effect.
+    llm_config: Any
     # ISO8601 UTC timestamp captured at pipeline start. Used when
     # writing output files so each artifact carries an end-to-end
     # timing footprint alongside LLM provenance.
@@ -78,6 +83,9 @@ class ReviewState(TypedDict, total=False):
     # in-body ``Ended:`` line and the prepended provenance block agree
     # to the second. Callers read this from state after the graph runs.
     ended_at: str
+    # Set by node_format_report; read for the report provenance block.
+    n_format_repairs: int
+    n_reviewers_total: int
 
 
 def node_ingest_pdf(state: ReviewState) -> ReviewState:
@@ -85,10 +93,16 @@ def node_ingest_pdf(state: ReviewState) -> ReviewState:
     from ai_paper_review.llm.factory import make_client
 
     logger.info("Ingesting PDF: %s", state["pdf_path"])
-    cfg = load_config()
-    provider = state.get("llm_provider") or cfg.review_provider
+    cfg = state.get("llm_config") or load_config()
+    cfg.set_review_llm(state.get("llm_provider"), state.get("llm_model"))
 
-    text = extract_pdf_for_provider(state["pdf_path"], provider)
+    text = extract_pdf_for_provider(state["pdf_path"], cfg.review_provider)
+    if len(text.strip()) < 500:
+        raise ValueError(
+            f"Only {len(text.strip())} characters of text extracted from "
+            f"{state['pdf_path']}; the PDF looks image-only (scanned). "
+            f"Run OCR on it first."
+        )
     llm_client = make_client(cfg, use_case="review")
     state["paper"] = extract_paper_summary_llm(text, llm_client)
     logger.info("Extracted title: %s", state["paper"]["title"][:80])
@@ -119,9 +133,10 @@ def build_graph():
     g.add_edge("ingest_pdf", "load_db")
     g.add_edge("load_db", "select_reviewers")
     # Clarity reviewer runs BEFORE the parallel persona reviewers so its
-    # single sequential call seeds the provider's prompt cache with the
-    # (shared system + PDF) prefix. The N persona reviewers that dispatch
-    # next all hit the warm cache for the PDF portion (big tokens) and
+    # single sequential call seeds the prompt cache with the (shared
+    # system + PDF) prefix on providers that cache it (anthropic_api,
+    # openai_api, google_api; not claude_sdk). The N persona reviewers
+    # that dispatch next then hit the warm cache for the PDF portion and
     # only pay the un-cached tail (per-persona text). Clarity's output
     # is still orthogonal to the persona pipeline — never added to
     # all_comments / raw_reviews.
@@ -205,11 +220,11 @@ def main():
     )
     ap.add_argument(
         "--provider", default=None,
-        help="Override LLM provider from config (anthropic|openai|google|xai|openai_compatible)",
+        help=f"Override LLM provider from config ({'|'.join(SUPPORTED_PROVIDERS)})",
     )
     ap.add_argument(
         "--model", default=None,
-        help="Override LLM model from config (e.g. gpt-4o, gemini-2.5-pro, claude-sonnet-4-5-20250929)",
+        help="Override LLM model from config (e.g. gpt-4o, gemini-3.8-flash, claude-sonnet-5-5)",
     )
     ap.add_argument(
         "--reviewers",
@@ -279,12 +294,11 @@ def main():
     final = graph.invoke(initial) if graph is not None else run_linear(initial)
 
     _cfg = _load_config()
-    _active_provider = final.get("llm_provider") or _cfg.review_provider
-    _active_model = final.get("llm_model") or _cfg.review_model
+    _cfg.set_review_llm(final.get("llm_provider"), final.get("llm_model"))
     provenance = format_provenance(
-        provider=_active_provider,
-        model=_active_model,
-        base_url=_cfg.resolve_base_url(_active_provider),
+        provider=_cfg.review_provider,
+        model=_cfg.review_model,
+        base_url=_cfg.resolve_base_url_for_stage("review"),
         launched_at=launched_at,
         ended_at=final.get("ended_at"),
         format_fix_retries=final.get("n_format_repairs"),
@@ -311,7 +325,6 @@ def main():
     Path(args.clustering_similarities_out).write_text(
         format_clustering_similarities_md(
             final["paper"],
-            final.get("all_comments", []),
             final.get("clustering_similarities", {}),
         )
     )
@@ -323,8 +336,13 @@ def main():
     clarity_copy["domain"] = clarity.get("_domain", "")
     Path(args.clarity_out).write_text(review_dict_to_markdown(clarity_copy))
 
+    # Same id format as the web UI run name: <stem>-<provider>-<model>-<YYYYMMDD-HHMMSS>.
+    ts = launched_at[:19].replace("-", "").replace("T", "-").replace(":", "")
+    safe_model = (_cfg.review_model or "unknown").replace("/", "-")
+    paper_id = f"{pdf_path.stem}-{_cfg.review_provider}-{safe_model}-{ts}"
     raw_md_lines = [
         "# AI Review Output", "",
+        f"**Paper ID:** {paper_id}",
         f"**Title:** {final['paper']['title']}", "",
     ]
     for rv in final["raw_reviews"]:

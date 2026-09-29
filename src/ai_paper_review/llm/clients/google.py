@@ -26,7 +26,34 @@ import threading
 from pathlib import Path
 from typing import Dict, Optional
 
+from .base import ReplyBlockedError
+
 logger = logging.getLogger("llm_client")
+
+# finish_reason values that still leave a usable (possibly empty) reply.
+_OK_FINISH = {None, "STOP", "MAX_TOKENS", "FINISH_REASON_UNSPECIFIED"}
+
+
+def _reply_text(resp, max_tokens: int) -> str:
+    """Text of a generate_content reply. Raises ReplyBlockedError when Gemini
+    blocked the prompt or reply, or used the whole budget without text."""
+    feedback = getattr(resp, "prompt_feedback", None)
+    block = getattr(feedback, "block_reason", None)
+    if block:
+        raise ReplyBlockedError(f"Gemini blocked the prompt: {getattr(block, 'value', block)}.")
+    candidates = getattr(resp, "candidates", None) or []
+    reason = getattr(candidates[0], "finish_reason", None) if candidates else None
+    reason = getattr(reason, "value", reason)
+    if reason not in _OK_FINISH:
+        raise ReplyBlockedError(f"Gemini stopped the reply: finish_reason={reason}.")
+    text = (resp.text or "").strip()
+    if not text and reason == "MAX_TOKENS":
+        raise ReplyBlockedError(
+            f"Gemini used up its output budget (max_tokens={max_tokens}) "
+            f"before writing any text. Thinking tokens count against "
+            f"max_output_tokens; raise max_tokens."
+        )
+    return text
 
 
 class GoogleClient:
@@ -59,17 +86,34 @@ class GoogleClient:
                 # Cached-content path: the (system + PDF) prefix lives
                 # on Gemini's side already; this request only ships
                 # the per-reviewer user text.
-                resp = self._client.models.generate_content(
-                    model=self.model,
-                    config=self._types.GenerateContentConfig(
-                        cached_content=cache_name,
-                        max_output_tokens=max_tokens,
-                    ),
-                    contents=user,
-                )
-                return (resp.text or "").strip()
+                try:
+                    resp = self._client.models.generate_content(
+                        model=self.model,
+                        config=self._types.GenerateContentConfig(
+                            cached_content=cache_name,
+                            max_output_tokens=max_tokens,
+                        ),
+                        contents=user,
+                    )
+                except Exception as e:
+                    # The cache expires after its TTL, and a run can
+                    # outlast it; stop using it and send the PDF instead.
+                    # Other errors (429, 5xx, auth) go to RetryClient.
+                    code = getattr(e, "code", None)
+                    if not (code in (403, 404)
+                            or (code is None and "CachedContent" in str(e))):
+                        raise
+                    logger.warning(
+                        "Gemini: call with context cache %s failed (%s: %s). "
+                        "Falling back to un-cached PDF for the rest of this run.",
+                        cache_name, type(e).__name__, e,
+                    )
+                    with self._cache_lock:
+                        self._cache_names[pdf_path] = None
+                else:
+                    return _reply_text(resp, max_tokens)
             # Fall through to the un-cached PDF path when cache
-            # creation failed — behaviour matches the pre-cache code.
+            # creation or the cached call failed.
             pdf_part = self._types.Part.from_bytes(
                 data=Path(pdf_path).read_bytes(),
                 mime_type="application/pdf",
@@ -85,7 +129,7 @@ class GoogleClient:
             ),
             contents=contents,
         )
-        return (resp.text or "").strip()
+        return _reply_text(resp, max_tokens)
 
     def _get_or_create_cache(self, system: str, pdf_path: str) -> Optional[str]:
         """Return a cached-content resource name for ``(system, pdf)``,

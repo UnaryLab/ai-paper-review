@@ -50,13 +50,15 @@ def list_available_databases() -> List[Dict[str, Any]]:
     # Bundled databases — every *_reviewer_db.md in the package directory.
     for p in sorted(BUNDLED_DB_DIR.glob("*_reviewer_db.md")):
         try:
-            n = len(parse_reviewer_db(str(p)))
+            parsed = parse_reviewer_db(str(p))
+            n = len(parsed)
             db_id = "__default__" if p == DEFAULT_DB_PATH else f"{_BUNDLED_PREFIX}{p.name}"
             out.append({
                 "id": db_id,
                 "label": _make_label(p),
                 "path": str(p),
                 "n_reviewers": n,
+                "n_personas": len({r.persona for r in parsed}),
                 "is_default": True,
                 "can_delete": False,
             })
@@ -67,12 +69,14 @@ def list_available_databases() -> List[Dict[str, Any]]:
     if DATABASES_DIR.exists():
         for p in sorted(DATABASES_DIR.glob("*.md")):
             try:
-                n = len(parse_reviewer_db(str(p)))
+                parsed = parse_reviewer_db(str(p))
+                n = len(parsed)
                 out.append({
                     "id": p.name,
                     "label": _make_label(p),
                     "path": str(p),
                     "n_reviewers": n,
+                    "n_personas": len({r.persona for r in parsed}),
                     "is_default": False,
                     "can_delete": True,
                 })
@@ -126,17 +130,16 @@ except Exception:
 
 def _load_reviewers_for_database_id(database_id: str) -> List[Reviewer]:
     """``__default__`` returns the bundled REVIEWERS list (parsed at
-    startup); any other id is parsed on demand from DATABASES_DIR.
-    Per-request parse cost is fine — files are <1MB and this only runs
-    on browser pages.
+    startup); any other id is resolved via ``resolve_database_path`` and
+    parsed on demand. Per-request parse cost is fine — files are <1MB and
+    this only runs on browser pages.
     """
     if not database_id or database_id == "__default__":
         return REVIEWERS
-    if "/" in database_id or "\\" in database_id or ".." in database_id:
+    try:
+        p = resolve_database_path(database_id)
+    except ValueError:
         raise FileNotFoundError(database_id)
-    p = DATABASES_DIR / database_id
-    if not p.exists():
-        raise FileNotFoundError(str(p))
     return parse_reviewer_db(str(p))
 
 

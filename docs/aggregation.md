@@ -21,7 +21,7 @@ Each recurring suggestion maps to a specific knob in the reviewer-database confi
 | `strengthen_persona_prompt`   | Add a bullet to the target persona's `priorities` list                             |
 | `reduce_persona_noise`        | Tighten the target persona's `common_concerns` field                               |
 | `selection_policy_adjustment` | Raise `domain_bleed`, or require a persona-floor, so the missed persona gets selected |
-| `sub_rating_signal`           | Strengthen or add the persona that maps to the low sub-rating dimension (e.g. soundness → Methodology Critic) |
+| `sub_rating_signal`           | Strengthen the `priorities` of the persona that maps to the low sub-rating dimension (e.g. soundness → Methodology Critic), or check that it gets selected |
 | `topical_gap`                 | Add a new persona for the uncovered category                                       |
 
 ---
@@ -119,7 +119,7 @@ md = render_changelog(
 
 **Inputs:**
 - `load_deltas(paths)` — accepts a list of paths or glob patterns. Parse errors are logged and skipped; missing files don't abort.
-- `aggregate(deltas)` — groups by `(type, target)`, returns `List[SuggestionAgg]` sorted by `support` descending.
+- `aggregate(deltas)`: groups by `(type, target)`, returns `List[SuggestionAgg]` sorted by `support` descending. `support` counts distinct papers, so a paper that repeats a suggestion adds 1.
 
 **Outputs:**
 - Each `SuggestionAgg` has: `type`, `target`, `support`, `paper_ids`, `example_misses`, `rationales`, `extra`.
@@ -136,7 +136,7 @@ md = render_changelog(
 2. Reviewer-prompt changes affect every future review on every paper; a human "diff + commit" step keeps the blast radius visible.
 3. Keeping the module stateless lets you re-run it as often as you like (e.g. after every validation) without risk.
 
-**What happens when N = 1.** The CLI applies the `--min-support` filter as-is — with `--min-support 2` on a single-paper workdir you get 0 recommendations and everything lands in the "Skipped" section. Use `--min-support 1` for early-corpus exploration. The web UI additionally clamps `min_support = max(1, min(min_support, n_papers))` so a too-large value doesn't hide all suggestions when the corpus is small.
+**What happens when N = 1.** The CLI applies the `--min-support` filter as-is: with `--min-support 2` on a single-paper workdir you get 0 recommendations, the "Skipped" section lists up to 20 of the below-threshold groups, and the "Skipped / no-op" count in the Summary covers all of them. Use `--min-support 1` for early-corpus exploration. The web UI additionally clamps `min_support = max(1, min(min_support, n_papers))` so a too-large value doesn't hide all suggestions when the corpus is small.
 
 **Below-threshold suggestions are still shown.** The web page keeps them in a collapsed section under the main recommendations. Near-misses let you lower `min_support` intelligently if you think a pattern is about to emerge.
 

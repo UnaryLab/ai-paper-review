@@ -1,8 +1,9 @@
 """Greedy agglomerative clustering of cross-reviewer comments.
 
-Embeds each comment's ``summary + description + keywords`` text and
-groups any pair whose cosine similarity exceeds the threshold (env-var
-``CLUSTER_THRESHOLD``, default ``0.55``). Produces clusters scored on
+Embeds each comment's ``summary + description + keywords`` text; each
+unassigned comment, in order, seeds a cluster and pulls in every later
+unassigned comment whose cosine similarity to it meets the threshold
+(env-var ``CLUSTER_THRESHOLD``, default ``0.55``). Produces clusters scored on
 how many *distinct* reviewers raised the same point — the consensus
 signal that drives ranking downstream.
 """
@@ -20,6 +21,15 @@ from .selection import Embedder
 logger = logging.getLogger("review_system")
 
 
+def _cluster_threshold() -> float:
+    raw = os.environ.get("CLUSTER_THRESHOLD", "0.55")
+    try:
+        return float(raw)
+    except ValueError:
+        logger.warning("Invalid CLUSTER_THRESHOLD=%r; using default 0.55", raw)
+        return 0.55
+
+
 def node_cluster_comments(state):
     """Cluster comments by semantic similarity of (summary + description + keywords).
 
@@ -31,7 +41,7 @@ def node_cluster_comments(state):
     if not comments:
         state["clusters"] = []
         state["clustering_similarities"] = {
-            "threshold": float(os.environ.get("CLUSTER_THRESHOLD", "0.55")),
+            "threshold": _cluster_threshold(),
             "backend": "n/a",
             "labels": [],
             "matrix": [],
@@ -63,7 +73,7 @@ def node_cluster_comments(state):
     # clustering loop below and by format_clustering_similarities_md.
     sim_matrix = vecs @ vecs.T
 
-    threshold = float(os.environ.get("CLUSTER_THRESHOLD", "0.55"))
+    threshold = _cluster_threshold()
     n = len(comments)
     assigned = [-1] * n
     clusters: List[List[int]] = []
@@ -130,7 +140,6 @@ def node_cluster_comments(state):
 
 def format_clustering_similarities_md(
     paper: Dict[str, Any],
-    comments: List[Dict[str, Any]],
     clustering_similarities: Dict[str, Any],
 ) -> str:
     """Render the pairwise comment-similarity landscape as markdown."""
@@ -155,19 +164,22 @@ def format_clustering_similarities_md(
     out.append(
         "Each row below is one ordered pair of comments (rows i < j over "
         "the full comment list). Similarity is cosine (L2-normalized "
-        "embeddings). Pairs at or above the threshold merged into the "
-        "same cluster; the clustering is greedy single-link, so a pair "
-        "below threshold can still end up in the same cluster via a "
-        "higher-scoring chain of intermediate pairs.\n\n"
+        "embeddings). Clustering is greedy leader-based: each not-yet-"
+        "clustered comment, in list order, starts a cluster and takes "
+        "every later unclustered comment whose similarity to that first "
+        "comment is at or above the threshold. Only similarity to the "
+        "cluster's first comment counts, so a pair above threshold can "
+        "land in different clusters, and a pair below threshold can "
+        "share a cluster when both match its first comment.\n\n"
     )
 
     # ---- View 1: sorted near-threshold pair list ----
     out.append("## Pairs near / above the clustering threshold\n\n")
     out.append(f"Every pair with similarity ≥ {near_miss_floor:.3f} "
                f"(threshold − 0.15), descending. The **Same cluster?** "
-               "column reflects the final clustering decision after the "
-               "greedy chain — so some pairs just below threshold still "
-               "read as same-cluster.\n\n")
+               "column reflects the final clustering decision, which compares "
+               "each comment only to its cluster's first comment, so a "
+               "pair's own similarity does not decide it.\n\n")
     out.append("| i | j | Comment A | Comment B | Similarity | ≥ threshold | Same cluster? |\n")
     out.append("|---|---|---|---|---|---|---|\n")
     rows: List[tuple] = []

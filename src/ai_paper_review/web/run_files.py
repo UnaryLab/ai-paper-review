@@ -7,6 +7,18 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 
+# Validation uploads are saved as ``<prefix><sanitized name>`` so the
+# human and AI files never share a name with each other or with a
+# worker-written artifact.
+HUMAN_UPLOAD_PREFIX = "human__"
+AI_UPLOAD_PREFIX = "ai__"
+
+_UPLOAD_DESCRIPTIONS = {
+    HUMAN_UPLOAD_PREFIX: "Uploaded human reviews (validation input).",
+    AI_UPLOAD_PREFIX: "Uploaded AI review (validation input).",
+}
+
+
 _KNOWN_FILES: Dict[str, Dict[str, str]] = {
     "review_report.md": {
         "category": "outputs",
@@ -102,14 +114,17 @@ def list_run_files(
         except OSError:
             size = "?"
         meta = _KNOWN_FILES.get(f.name)
+        upload_desc = next((d for pfx, d in _UPLOAD_DESCRIPTIONS.items()
+                            if f.name.startswith(pfx)), None)
         entry = {
             "name": f.name,
             "abs_path": str(f.resolve()),
             "size": size,
-            "description": meta["description"] if meta else
+            "description": upload_desc or (
+                           meta["description"] if meta else
                            "User-uploaded source file." if f.suffix.lower()
                            in {".pdf", ".md", ".txt"} else
-                           "Unclassified file in this run directory.",
+                           "Unclassified file in this run directory."),
         }
         if meta:
             if meta["category"] == "internal":

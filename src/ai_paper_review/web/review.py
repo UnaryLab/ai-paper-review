@@ -43,8 +43,11 @@ def _run_review_job(
     provider: str | None = None, model: str | None = None,
     db_path: str | None = None,
     n_reviewers: int = DEFAULT_N_REVIEWERS,
+    database_id: str = "__default__",
+    llm_config=None,
 ):
-    """Blocking worker run in a daemon thread."""
+    """Blocking worker run in a daemon thread. ``llm_config`` is the config
+    loaded at submit; it is put in ``state["llm_config"]`` for the nodes."""
     from ai_paper_review.provenance import now_iso
     launched_at = now_iso()
     try:
@@ -55,6 +58,8 @@ def _run_review_job(
             "n_reviewers": int(n_reviewers),
             "launched_at": launched_at,
         }
+        if llm_config is not None:
+            state["llm_config"] = llm_config
         if provider:
             state["llm_provider"] = provider
         if model:
@@ -141,10 +146,10 @@ def _run_review_job(
         # state — reusing them here keeps the prepended block in sync
         # with whatever the writer sees.
         from ai_paper_review.provenance import format_provenance
-        _cfg = load_config()
+        _cfg = llm_config or load_config()
         _active_provider = state.get("llm_provider") or _cfg.review_provider
         _active_model = state.get("llm_model") or _cfg.review_model
-        _active_base_url = _cfg.resolve_base_url(_active_provider)
+        _active_base_url = _cfg.resolve_base_url_for_stage("review")
         review_name = _run_name(
             pdf_path.name, _active_provider, _active_model, launched_at,
         )
@@ -180,7 +185,6 @@ def _run_review_job(
         clustering_similarities_md.write_text(
             format_clustering_similarities_md(
                 state["paper"],
-                state.get("all_comments", []),
                 state.get("clustering_similarities", {}),
             )
         )
@@ -239,6 +243,8 @@ def _run_review_job(
             "clarity_review": clarity_review,
             "n_format_repairs": _n_format_repairs,
             "n_reviewers_total": _n_reviewers_total,
+            # Reviewer links on the result page resolve against this DB.
+            "database_id": database_id,
             # LLM + timing provenance — shown on the result page so a
             # reader can tell which model produced the review and how
             # long the run took without opening the markdown. Mirrors
@@ -346,18 +352,26 @@ def start_review():
     # Provider and model come entirely from config.yaml's llm_review section
     # (set via the Model page). No form overrides — keeps the submit flow
     # a single click when the config is already right.
-    cfg = load_config()
+    try:
+        cfg = load_config()
+    except Exception as e:
+        # ValueError from load_config is already flashed by the app-wide
+        # context processor.
+        if not isinstance(e, ValueError):
+            flash(f"Could not load config: {e}")
+        return redirect(url_for("review_launcher"))
     chosen_provider = cfg.resolve_provider("review")
     chosen_model = cfg.resolve_model("review")
     chosen_base_url = cfg.resolve_base_url_for_stage("review") or ""
 
-    has_key = cfg.resolve_api_key(chosen_provider)
-    if not has_key and not is_local_provider(cfg, chosen_provider):
-        envs = ", ".join(env_vars_for(chosen_provider)) or "(none)"
+    has_key = cfg.resolve_api_key(chosen_provider, chosen_base_url or None)
+    if not has_key and not is_local_provider(cfg, chosen_provider, "review"):
+        envs = ", ".join(env_vars_for(chosen_provider, chosen_base_url or None))
+        env_clause = f", or export one of these env vars: {envs}" if envs else ""
         flash(
             f"API key missing for review provider '{chosen_provider}'. "
-            f"Add it under api_keys.{chosen_provider} in config.yaml, or export "
-            f"one of these env vars: {envs}. Then restart the server. "
+            f"Add it under api_keys.{chosen_provider} in config.yaml{env_clause}. "
+            f"Then restart the server. "
             f"(Set review provider/model on the Model page.)"
         )
         return redirect(url_for("about"))
@@ -378,15 +392,17 @@ def start_review():
 
     # Reject at form submission so a small uploaded DB + a large N
     # doesn't surface deep inside node_select_reviewers as IndexError.
+    # Selection picks at most one reviewer per persona, so the cap is
+    # the number of distinct personas.
     try:
-        db_reviewers_count = len(parse_reviewer_db(str(db_path)))
+        db_reviewers_count = len({r.persona for r in parse_reviewer_db(str(db_path))})
     except Exception as e:
         flash(f"Could not read the selected database: {e}")
         return redirect(url_for("review_launcher"))
     if n_reviewers > db_reviewers_count:
         flash(
             f"The selected database contains only {db_reviewers_count} "
-            f"reviewer{'s' if db_reviewers_count != 1 else ''}, but you "
+            f"distinct reviewer persona{'s' if db_reviewers_count != 1 else ''}, but you "
             f"asked for {n_reviewers}. Please lower the number of "
             f"reviewers (maximum for this database: {db_reviewers_count}) "
             f"or pick a larger database, then resubmit."
@@ -427,7 +443,7 @@ def start_review():
     t = threading.Thread(
         target=_run_review_job,
         args=(job_id, pdf_path, job_dir, chosen_provider, chosen_model,
-              str(db_path), n_reviewers),
+              str(db_path), n_reviewers, chosen_database_id, cfg),
         daemon=True,
     )
     t.start()
@@ -494,13 +510,19 @@ def review_download(job_id: str, kind: str):
 
 @app.post("/review/<job_id>/delete")
 def review_delete(job_id: str):
-    """Remove a review from the registry and delete its files. Safe on any
-    status (queued/running/done/errored). Redirects to the Review launcher.
+    """Remove a finished (done/error) review from the registry and delete
+    its files. Running reviews are refused. Redirects to the Review launcher.
     """
     with JOBS_LOCK:
-        job = JOBS.pop(job_id, None)
+        job = JOBS.get(job_id)
+        if job is not None and job.get("status") in ("done", "error"):
+            JOBS.pop(job_id)
     if job is None:
         flash(f"Review {job_id} not found (already deleted?).")
+        return redirect(url_for("review_launcher"))
+    if job.get("status") not in ("done", "error"):
+        flash(f"Review {job_id} is still running ({job.get('status')}); "
+              f"wait until it finishes before deleting it.")
         return redirect(url_for("review_launcher"))
 
     # Best-effort cleanup — at worst we leak a few files.

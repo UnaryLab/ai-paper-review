@@ -5,8 +5,16 @@ which talks to the Copilot CLI (bundled with the Python SDK) over JSON-RPC.
 Authentication is inherited from Copilot CLI — share creds with VSCode
 Copilot or run ``copilot auth login`` once.
 
-No API key is needed. The ``model`` parameter is informational only; the
-SDK uses whichever model Copilot CLI is currently configured with.
+No API key is needed. ``model`` is passed to the session as the Copilot
+model id.
+
+The prompt carries untrusted paper text, so each session runs with no
+built-in tools (``available_tools=[]``), a permission handler that
+denies every request, and a fresh empty temporary working directory, so
+no repo instruction files (``.github/copilot-instructions.md``,
+``AGENTS.md``) are loaded. The system prompt goes in ``system_message``
+in ``append`` mode, which keeps the CLI's safety section; the SDK marks
+``replace`` as removing all SDK guardrails.
 
 This client wraps the SDK's async streaming API in a synchronous
 ``complete()`` method so it plugs into the same pipeline used by the
@@ -21,9 +29,18 @@ colocating it keeps the copilot-specific complexity in one file.
 from __future__ import annotations
 
 import logging
+import tempfile
 from typing import Any, Optional
 
 logger = logging.getLogger("llm_client")
+
+# Seconds without any session event before a call is treated as hung.
+_IDLE_TIMEOUT_S = 300.0
+
+
+def _deny_all(request: Any, invocation: Any) -> Any:
+    from copilot.session import PermissionRequestResult
+    return PermissionRequestResult(kind="denied-by-rules")
 
 
 async def _aclose_best_effort(
@@ -72,8 +89,7 @@ class CopilotSDKClient:
                  base_url: Optional[str] = None):
         # Lazy import — only required when this provider is actually selected.
         try:
-            from copilot import CopilotClient as _SDKClient  # noqa: F401
-            from copilot.session import PermissionHandler as _Perm  # noqa: F401
+            from copilot import CopilotClient as _SDKClient
         except ImportError as e:
             raise ImportError(
                 "The GitHub Copilot Python SDK is not installed. "
@@ -82,7 +98,6 @@ class CopilotSDKClient:
                 "then authenticate with GitHub Copilot CLI."
             ) from e
         self._SDKClient = _SDKClient
-        self._PermissionHandler = _Perm
         self.model = model
 
     def complete(
@@ -94,17 +109,14 @@ class CopilotSDKClient:
     ) -> str:
         """Synchronous wrapper around the async SDK.
 
-        The SDK has no separate system-message field, so we prepend the
-        system prompt to the user message with a clear separator. The
-        ``pdf_path`` argument is accepted but ignored — Copilot CLI
+        The ``pdf_path`` argument is accepted but ignored: Copilot CLI
         doesn't take binary PDFs, so the caller should have already
         passed text extracted via ``extract_pdf_markdown`` in ``user``.
         """
         import asyncio
-        combined = f"{system}\n\n---\n\n{user}"
-        return asyncio.run(self._complete_async(combined))
+        return asyncio.run(self._complete_async(system, user))
 
-    async def _complete_async(self, prompt: str) -> str:
+    async def _complete_async(self, system: str, prompt: str) -> str:
         """Run one turn through a fresh Copilot session and return the full reply.
 
         Handles more than just ``assistant.message_delta`` / ``session.idle`` —
@@ -125,6 +137,8 @@ class CopilotSDKClient:
 
         client = self._SDKClient()
         session = None
+        workdir = tempfile.TemporaryDirectory(prefix="copilot-review-",
+                                             ignore_cleanup_errors=True)
         try:
             # Prefer the documented `start()` method; fall back to
             # __aenter__ for SDK builds that only expose the async-CM API.
@@ -136,7 +150,11 @@ class CopilotSDKClient:
                 await client.__aenter__()
 
             session = await client.create_session(
-                on_permission_request=self._PermissionHandler.approve_all,
+                on_permission_request=_deny_all,
+                model=self.model,
+                system_message={"mode": "append", "content": system},
+                available_tools=[],
+                working_directory=workdir.name,
                 streaming=True,
             )
 
@@ -173,15 +191,22 @@ class CopilotSDKClient:
             await session.send(prompt)
 
             # Guard against the session hanging forever if the SDK fails
-            # to emit session.idle.
-            try:
-                await asyncio.wait_for(done.wait(), timeout=300.0)
-            except asyncio.TimeoutError:
-                raise RuntimeError(
-                    f"CopilotSDK: no session.idle after 300s. "
-                    f"Events seen: {seen_event_types}. Chunks: {len(chunks)}. "
-                    f"Check `gh auth status`, Copilot subscription, and premium quota."
-                )
+            # to emit session.idle: give up after _IDLE_TIMEOUT_S with no
+            # new events, so a long reply that keeps streaming finishes.
+            while True:
+                n_events = len(seen_event_types)
+                try:
+                    await asyncio.wait_for(done.wait(), timeout=_IDLE_TIMEOUT_S)
+                    break
+                except asyncio.TimeoutError:
+                    if len(seen_event_types) > n_events:
+                        continue
+                    raise RuntimeError(
+                        f"CopilotSDK: no session.idle and no events for "
+                        f"{_IDLE_TIMEOUT_S:.0f}s. "
+                        f"Events seen: {seen_event_types}. Chunks: {len(chunks)}. "
+                        f"Check `gh auth status`, Copilot subscription, and premium quota."
+                    )
 
             output = "".join(chunks)
 
@@ -204,6 +229,14 @@ class CopilotSDKClient:
                          len(output), sum(1 for e in seen_event_types if e == "assistant.message_delta"))
             return output
 
+        except RuntimeError:
+            raise
+        except Exception as e:
+            # RetryClient matches rate-limit text only on RuntimeError, and
+            # SDK errors such as JsonRpcError are not RuntimeError.
+            raise RuntimeError(
+                f"CopilotSDK call failed: {type(e).__name__}: {e}"
+            ) from e
         finally:
             # Release session BEFORE stopping the client so the CLI drops
             # per-session state cleanly. Each step is wrapped in
@@ -215,7 +248,17 @@ class CopilotSDKClient:
                     session, label="session", timeout=10.0,
                     method_names=("close", "__aexit__"),
                 )
+                # disconnect() keeps session state on disk (the full prompt
+                # in ~/.copilot/session-state/<id>/); delete_session removes
+                # it and needs the client still running.
+                try:
+                    await asyncio.wait_for(
+                        client.delete_session(session.session_id), timeout=10.0)
+                except Exception as e:
+                    logger.debug("CopilotSDK: delete_session failed: %s: %s",
+                                 type(e).__name__, e)
             await _aclose_best_effort(
                 client, label="client", timeout=10.0,
                 method_names=("stop", "close", "__aexit__"),
             )
+            workdir.cleanup()

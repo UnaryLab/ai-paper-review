@@ -49,7 +49,7 @@ Below the `# Review` heading, a block of bold-label lines carries reviewer and r
 
 | Label                     | Expected | Type              | Description                                                        |
 |---------------------------|----------|-------------------|--------------------------------------------------------------------|
-| `Reviewer ID`             | yes      | string            | e.g. `R042`. Human reviews use `H01`, `H02`, etc.                  |
+| `Reviewer ID`             | yes      | string            | e.g. `R042`. Converted human reviews use the reviewer label from the source file (non-alphanumeric runs replaced by `_`), or `Reviewer_1`, `Reviewer_2`, etc. when none is given. |
 | `Domain`                  | yes      | string            | One of the database's domain names.                                |
 | `Persona`                 | yes      | string            | One of the database's persona names.                               |
 | `Topic Relevance`         | no       | float in [0, 1]   | Selector's similarity score between the paper and this reviewer.   |
@@ -59,7 +59,7 @@ Below the `# Review` heading, a block of bold-label lines carries reviewer and r
 
 "Expected" means the pipeline and downstream consumers rely on the field. The parser tolerates every one of these missing — it falls back to empty strings for text fields, `0.5` for `Topic Relevance`, `3` for `Confidence`, and empty for the recommendation — so malformed LLM output doesn't crash the pipeline. But a review missing `Reviewer ID`, `Domain`, `Persona`, or `Overall Recommendation` produces degraded downstream output: clustering still works, but the selected-reviewer table, per-reviewer recommendation table, and validation alignment results go blank or show `n/a`.
 
-For human reviews, `Reviewer ID` uses an `H##` prefix rather than `R###`. All other labels are the same.
+For converted human reviews, `Reviewer ID` is the sanitized source label or `Reviewer_<n>` rather than `R###`. All other labels are the same.
 
 ### Optional sections
 
@@ -67,8 +67,8 @@ Human-review conversions may add three optional sections between the header and 
 
 ```markdown
 ## Paper Summary
-<free-form prose summarizing what the paper proposes — used as context by
-the validator's batch-similarity LLM call, not rendered in the report>
+<free-form prose summarizing what the paper proposes; parsed and kept,
+not rendered in the report>
 
 ## Strengths
 - Short bullet describing a strong point
@@ -108,7 +108,7 @@ After the header, each review contains one or more comment blocks. Every comment
 - **Keywords:** baseline, prior art, MLPerf, comparison
 ```
 
-The six fields above (Severity, Category, Section Reference, Summary, Description, Keywords) are what every AI reviewer prompt requires. The parser also accepts a `Suggestion:` field from older review files — it is preserved for backward compatibility but new reviews do not emit it (the fix suggestion is folded into Description).
+The six fields above (Severity, Category, Section Reference, Summary, Description, Keywords) are what every AI reviewer prompt requires. The parser also accepts an optional `Suggestion:` field. The bundled reviewer prompts do not ask for it; the fix suggestion is part of Description.
 
 ### Field-by-field
 
@@ -116,11 +116,11 @@ The six fields above (Severity, Category, Section Reference, Summary, Descriptio
 |---------------------|----------|-------------------|--------------------|----------------------------------------------------------------------------|
 | `Severity`          | yes      | enum              | `"minor"`          | `major` / `moderate` / `minor`. Drives the importance weighting in clustering. Unknown values fall back to `minor`. |
 | `Category`          | yes      | slug              | `"general"`        | Lowercase, short: `novelty` / `methodology` / `evaluation` / `reproducibility` / `clarity` / `scope` / `ethics` / `security` / etc. Used for persona-alignment analysis. |
-| `Section Reference` | yes      | string            | `"general"`        | Anchor in the paper the comment refers to: section title, figure/table number, equation number, or a quoted phrase. A missing anchor weakens validation scoring — comments marked `general` are treated as likely templated during calibration. |
+| `Section Reference` | yes      | string            | `"general"`        | Anchor in the paper the comment refers to: section title, figure/table number, equation number, or a quoted phrase. |
 | `Summary`           | yes      | one-line string   | derived            | The comment in ≤ 15 words. Drives clustering similarity. If missing, the parser derives one from the first sentence of `Description` (or, for free-form comment blocks, from the prose body). |
 | `Description`       | yes      | multi-line string | derived            | Full critique plus what the authors should do about it. 2–4 sentences. Cites specific paper content. If missing but the comment block contains free-form prose, the parser uses the prose as the description. |
 | `Keywords`          | yes      | comma-separated   | `[]`               | 2–5 topic tags. Used for cross-reviewer clustering.                        |
-| `Suggestion`        | no       | multi-line string | (omitted)          | Legacy field from older review files. Preserved by the parser for backward compatibility; new reviews fold the fix recommendation into `Description` instead. |
+| `Suggestion`        | no       | multi-line string | (omitted)          | Optional field, parsed if present. The bundled reviewer prompts put the fix recommendation in `Description` instead. |
 
 "Expected" means the field is part of the canonical template the bundled reviewer system prompts emit, and downstream stages assume it exists. The parser is forgiving: every field has a fallback so malformed LLM output never crashes ingestion, but a review where every comment is missing both `Summary` and `Description` is effectively empty and will trigger the retry-up-to-5-times loop in the review worker.
 
@@ -145,11 +145,11 @@ The parser is lenient about:
 - Blank lines between fields
 
 It's strict about:
-- The `## Comment` prefix (lowercase works, upper-case also works, but no trailing punctuation after "Comment N")
+- The `## Comment N` heading: the word "Comment" (any case) followed by a number, with an optional colon after the number
 - Each field's label appearing verbatim (with the exception of the bold variants above)
 - Multi-line `Description` text ending at the next `- **Label:**` or the next `## Comment` heading
 
-When no `## Comment` headings are present, the parser falls back to treating the entire review body as a single "prose" comment with default Severity and Category — useful for free-form human reviews.
+When no `## Comment` headings are present, the parser returns zero comments. For LLM reviewer output this counts as unusable output and triggers the markdown-repair pass and retries. A `## Comment N` block with no structured fields keeps its prose as the Description, with default Severity and Category.
 
 ---
 
@@ -187,7 +187,7 @@ Schema exposed after parsing (per-review dict):
             "summary":           "Missing baseline comparison",
             "description":       "...",
             "text":              "...",         # alias for description; used by the validation pipeline
-            "suggestion":        "",            # empty on new reviews; non-empty on legacy files
+            "suggestion":        "",            # empty unless the block has a Suggestion field
             "keywords":          ["baseline", "prior art", "MLPerf", "comparison"],
         },
         # ...
@@ -199,11 +199,12 @@ Schema exposed after parsing (per-review dict):
 
 The human-facing report, rendered from the structured data above. Structure (in order):
 
-1. **Disclaimer block** — intended-use warning and description of what was analyzed (full PDF or extracted text, depending on provider).
-2. **Paper** — title and truncated abstract.
-3. **Selected Reviewers** table — ID, Domain, Persona, Selection Relevance score for every reviewer that ran.
-4. **Individual Recommendations** table — per-reviewer Overall Recommendation, Confidence, and comment count.
-5. **Ranked Review Issues** — one `### #N [SEVERITY] Summary` section per cluster, ordered by commonality × importance score. Each cluster shows score, cluster size, distinct reviewer count, category, section reference, and the representative comment's description. Clusters with more than one member include a collapsible `<details>` block listing the other phrasings.
+1. **Provenance block**: a `<!-- provenance -->` marker, then LLM provider / model, base URL, launch and end timestamps with duration, and the format-fix retries count (`X of N reviewer(s)`), followed by a `---` rule.
+2. **Disclaimer block**: intended-use warning and description of what was analyzed (full PDF or extracted text, depending on provider).
+3. **Paper**: title and truncated abstract.
+4. **Selected Reviewers** table: ID, Domain, Persona, Selection Relevance score for every reviewer that ran.
+5. **Individual Recommendations** table: per-reviewer Overall Recommendation, Confidence, and comment count.
+6. **Ranked Review Issues**: one `### #N [SEVERITY] Summary` section per cluster, ordered by commonality × importance score. Each cluster shows score, cluster size, distinct reviewer count, category, section reference, and the representative comment's description. Clusters with more than one member include a collapsible `<details>` block listing the other phrasings.
 
 There is no separate format spec for this file — it is prose/markdown rendered by the pipeline and is not parsed by any downstream stage.
 
@@ -214,7 +215,7 @@ There is no separate format spec for this file — it is prose/markdown rendered
 If you're writing a format converter or hand-editing a human review to the AI format, the key things to get right:
 
 1. **Always include `Reviewer ID`, `Domain`, `Persona`, `Overall Recommendation`.** Missing any of these makes the reviewer opaque to the cross-paper aggregation module.
-2. **Every comment needs a `Section Reference`.** The validator downgrades comments without anchors to "likely generic/templated" during calibration analysis. If a human review comment is genuinely un-anchored, use `Section Reference: (general)` explicitly rather than leaving the field blank.
+2. **Every comment needs a `Section Reference`.** It tells the reader where in the paper the comment applies. If a human review comment is genuinely un-anchored, use `Section Reference: (general)` explicitly rather than leaving the field blank.
 3. **`Summary` drives clustering.** Phrase it as a single declarative sentence that another reviewer raising the same issue would plausibly echo.
 4. **`Keywords` drive cross-review similarity.** Include the specific technical terms from the paper (method names, table/figure numbers, tool names). Avoid generic words like "improvement" or "unclear".
 

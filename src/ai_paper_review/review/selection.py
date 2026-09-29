@@ -43,13 +43,19 @@ class Embedder:
         vect = TfidfVectorizer(
             ngram_range=(1, 2), max_features=8000, stop_words="english"
         )
-        M = vect.fit_transform(texts).astype(np.float32).toarray()
+        try:
+            M = vect.fit_transform(texts).astype(np.float32).toarray()
+        except ValueError:
+            # Empty vocabulary (every text blank or stop words only): zero
+            # vectors, so every pairwise similarity is 0.
+            logger.warning("TF-IDF found no vocabulary in %d texts; using zero vectors", len(texts))
+            return np.zeros((len(texts), 1), dtype=np.float32)
         norms = np.linalg.norm(M, axis=1, keepdims=True) + 1e-9
         return M / norms
 
     @property
     def backend(self) -> str:
-        """'sbert' or 'tfidf' — downstream can auto-tune thresholds from this."""
+        """Active embedding backend: 'sbert' or 'tfidf'."""
         return self._backend
 
 
@@ -114,6 +120,7 @@ def select_reviewers(
         return selection_similarities[:k]
 
     selected: List[Tuple[Reviewer, float]] = []
+    skipped: List[Tuple[Reviewer, float]] = []
     used_personas: set = set()
     domain_counts: Dict[str, int] = {}
     domain_cap = max(1, int(round(k * (1.0 - domain_bleed))))
@@ -132,11 +139,22 @@ def select_reviewers(
                  and domain_counts.get(r.domain, 0) < domain_cap),
                 None,
             )
-            if best_other is not None and score < best_other - domain_bleed:
+            if best_other is not None and best_other >= score - domain_bleed:
+                skipped.append((reviewer, score))
                 continue
         selected.append((reviewer, score))
         used_personas.add(reviewer.persona)
         domain_counts[reviewer.domain] = domain_counts.get(reviewer.domain, 0) + 1
+
+    # Backfill from soft-capped candidates if the cross-domain picks
+    # ran out (their personas were taken before they came up).
+    for reviewer, score in skipped:
+        if len(selected) >= k:
+            break
+        if reviewer.persona not in used_personas:
+            selected.append((reviewer, score))
+            used_personas.add(reviewer.persona)
+    selected.sort(key=lambda x: -float(x[1]))
 
     return selected
 

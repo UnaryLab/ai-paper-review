@@ -21,6 +21,8 @@ import re
 from pathlib import Path
 from typing import Dict
 
+from ai_paper_review.llm.clients.base import FatalLLMError
+
 logger = logging.getLogger("review_system")
 
 
@@ -112,7 +114,11 @@ def extract_paper_summary_llm(text: str, llm_client) -> Dict[str, str]:
     user = f"Extract the title and abstract:\n\n{head}"
 
     try:
-        raw = llm_client.complete(system, user, max_tokens=600)
+        # Thinking tokens (Gemini 2.5, OpenAI reasoning models) count
+        # against this budget, so it is far above the reply's own length.
+        raw = llm_client.complete(system, user, max_tokens=4000)
+    except FatalLLMError:
+        raise
     except Exception as e:
         logger.warning(
             "LLM title/abstract extraction failed (%s: %s); falling back to heuristic.",
@@ -120,16 +126,22 @@ def extract_paper_summary_llm(text: str, llm_client) -> Dict[str, str]:
         )
         return extract_paper_summary(text)
 
-    # Parse title: first line starting with "Title:"
+    # Parse title: first line starting with "Title:".
+    # Labels may carry markdown emphasis (``**Title:**``), and the
+    # abstract may start on the line after ``Abstract:``.
     title = ""
     abstract = ""
+    in_abstract = False
     for line in raw.splitlines():
         stripped = line.strip()
-        if not title and stripped.lower().startswith("title:"):
-            title = stripped[len("title:"):].strip()
-        elif not abstract and stripped.lower().startswith("abstract:"):
-            abstract = stripped[len("abstract:"):].strip()
-        elif abstract:
+        m = re.match(r"[-*_#\s]*(title|abstract)[*_\s]*:[*_\s]*(.*)$", stripped, re.IGNORECASE)
+        label = m.group(1).lower() if m else ""
+        if not title and label == "title":
+            title = m.group(2).strip().strip("*_").strip()
+        elif not in_abstract and label == "abstract":
+            abstract = m.group(2).strip()
+            in_abstract = True
+        elif in_abstract:
             # continuation lines of the abstract
             abstract += " " + stripped
 
@@ -177,6 +189,8 @@ def extract_paper_summary(text: str) -> Dict[str, str]:
     if m:
         abstract = re.sub(r"\s+", " ", m.group(1)).strip()
     else:
-        abstract = re.sub(r"\s+", " ", head[len(title):2000]).strip()[:1500]
+        title_end = head.find(title)
+        title_end = title_end + len(title) if title_end >= 0 else 0
+        abstract = re.sub(r"\s+", " ", head[title_end:2000]).strip()[:1500]
 
     return {"title": title, "abstract": abstract, "full_text": text}

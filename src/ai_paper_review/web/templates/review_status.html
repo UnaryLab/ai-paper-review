@@ -58,6 +58,7 @@
     queued:     5,
     ingesting:  15,
     selecting:  25,
+    clarity:    25,
     reviewing:  25,   // 25–90% filled by per-reviewer progress
     clustering: 92,
     done:      100,
@@ -81,16 +82,40 @@
     section.style.display = "block";
 
     const completedIds = new Set((completed || []).map(r => r.reviewer_id));
-    let html = "";
+    const rows = [];
+
+    // Reviewer id / persona come from the (possibly uploaded) database,
+    // so they are set via textContent, never parsed as HTML.
+    function makeRow(cls, icon, id, persona, comments) {
+      const row = document.createElement("div");
+      row.className = "reviewer-row " + cls;
+      const iconEl = document.createElement("span");
+      iconEl.className = "reviewer-icon" + (cls === "reviewer-active" ? " spinner" : "");
+      iconEl.textContent = icon;
+      const label = document.createElement("span");
+      label.className = "reviewer-label";
+      if (id !== null) {
+        const code = document.createElement("code");
+        code.textContent = id;
+        label.append(code, " " + persona);
+      } else {
+        label.textContent = persona;
+      }
+      row.append(iconEl, label);
+      if (comments !== null) {
+        const c = document.createElement("span");
+        c.className = "reviewer-comments";
+        c.textContent = comments;
+        row.append(c);
+      }
+      return row;
+    }
 
     // Completed reviewers — checkmark
     if (completed && completed.length > 0) {
       for (const r of completed) {
-        html += `<div class="reviewer-row reviewer-done">
-          <span class="reviewer-icon">✓</span>
-          <span class="reviewer-label"><code>${r.reviewer_id}</code> ${r.persona}</span>
-          <span class="reviewer-comments">${r.n_comments} comments</span>
-        </div>`;
+        rows.push(makeRow("reviewer-done", "✓", r.reviewer_id, r.persona,
+                          `${r.n_comments} comments`));
       }
     }
 
@@ -98,11 +123,8 @@
     if (dispatched && dispatched.length > 0) {
       for (const r of dispatched) {
         if (!completedIds.has(r.reviewer_id)) {
-          html += `<div class="reviewer-row reviewer-active">
-            <span class="reviewer-icon spinner">⟳</span>
-            <span class="reviewer-label"><code>${r.reviewer_id}</code> ${r.persona}</span>
-            <span class="reviewer-comments">running…</span>
-          </div>`;
+          rows.push(makeRow("reviewer-active", "⟳", r.reviewer_id, r.persona,
+                            "running…"));
         }
       }
     }
@@ -112,13 +134,11 @@
     const total = reviewProgress ? reviewProgress.total : 10;
     const remaining = total - nDispatched;
     if (remaining > 0) {
-      html += `<div class="reviewer-row reviewer-pending">
-        <span class="reviewer-icon">○</span>
-        <span class="reviewer-label">${remaining} reviewer${remaining > 1 ? 's' : ''} waiting</span>
-      </div>`;
+      rows.push(makeRow("reviewer-pending", "○", null,
+                        `${remaining} reviewer${remaining > 1 ? 's' : ''} waiting`, null));
     }
 
-    list.innerHTML = html;
+    list.replaceChildren(...rows);
   }
 
   async function poll() {

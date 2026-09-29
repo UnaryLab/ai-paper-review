@@ -19,6 +19,7 @@ consumes.
 """
 from __future__ import annotations
 
+import re
 from collections import defaultdict
 from typing import Any, Dict, List, Optional
 
@@ -95,15 +96,16 @@ def build_calibration(
     persona_total: Dict[str, int] = defaultdict(int)
     persona_false: Dict[str, int] = defaultdict(int)
 
+    # Alignment only sees the first n_ai flat comments (flattened in
+    # raw_reviews order), so count only those.
+    remaining = alignment.get("n_ai")
     for c in ai_report.get("raw_reviews", []):
         p = c.get("_persona", "?")
-        persona_total[p] += len(c.get("comments", []))
-
-    matched_ai_comment_ids: set = set()
-    for hit in alignment["hits"]:
-        matched_ai_comment_ids.add(hit["primary_ai"]["id"])
-        for s in hit["supporting_ai"]:
-            matched_ai_comment_ids.add(s["ai"]["id"])
+        n = len(c.get("comments", []))
+        if remaining is not None:
+            n = min(n, remaining)
+            remaining -= n
+        persona_total[p] += n
 
     for hit in alignment["hits"]:
         personas_seen: set = set()
@@ -141,6 +143,8 @@ def build_calibration(
 
     for m in alignment["misses"]:
         expected_persona = route_category(m["category"], tables.category_to_persona)
+        if m["category"]:
+            uncovered_categories[m["category"]] += 1
         if expected_persona is None:
             miss_attributions.append(
                 {
@@ -154,7 +158,6 @@ def build_calibration(
             continue
 
         was_selected = expected_persona in selected_personas
-        uncovered_categories[m["category"]] += 1
         if not was_selected:
             selection_failures += 1
             failure_mode = "selection_failure"
@@ -261,9 +264,16 @@ def build_calibration(
     for rv in actual_reviews:
         scale = rv.get("sub_rating_scale")
         for sr_name, sr_value in (rv.get("sub_ratings") or {}).items():
-            if not isinstance(sr_value, (int, float)):
+            if isinstance(sr_value, str):
+                m = re.match(r"\s*(\d+)", sr_value)
+                if not m:
+                    continue
+                sr_int = int(m.group(1))
+            elif isinstance(sr_value, (int, float)):
+                sr_int = int(sr_value)
+            else:
                 continue
-            if not is_low_sub_rating(int(sr_value), scale or 4):
+            if not is_low_sub_rating(sr_int, scale or 4):
                 continue
             expected_persona = tables.sub_rating_to_persona.get(sr_name.lower())
             if expected_persona is None:
@@ -324,7 +334,7 @@ def build_calibration(
     uncovered_sorted = sorted(uncovered_categories.items(), key=lambda x: -x[1])
     for cat, n in uncovered_sorted:
         expected = route_category(cat, tables.category_to_persona)
-        if expected and expected not in miss_by_persona and expected not in missed_personas_needed:
+        if expected:
             continue
         suggestions.append(
             {

@@ -20,6 +20,7 @@ from ai_paper_review.llm.factory import make_client
 from ai_paper_review.llm.probing import describe_config, probe_providers
 from ai_paper_review.llm.utils import env_vars_for, is_local_provider
 from ai_paper_review.review.parsing import review_dict_to_markdown
+from ai_paper_review.review.reviewer_db import parse_reviewer_database
 from ai_paper_review.validation import conversion as cr
 from ai_paper_review.validation.alignment import align_comments, _HUMAN_CHUNK_SIZE
 from ai_paper_review.validation.calibration import build_calibration
@@ -28,7 +29,7 @@ from ai_paper_review.validation.metrics import compute_metrics
 from ai_paper_review.validation.reporting import format_report
 
 from .app import RUNS_DIR, app, logger
-from .databases import DEFAULT_DB_TABLES, REVIEWERS
+from .databases import DEFAULT_DB_TABLES, REVIEWERS, resolve_database_path
 from .jobs import (
     JOBS,
     JOBS_LOCK,
@@ -40,7 +41,7 @@ from .jobs import (
     _set_validate_job,
     _timestamped_run_id,
 )
-from .run_files import list_run_files
+from .run_files import AI_UPLOAD_PREFIX, HUMAN_UPLOAD_PREFIX, list_run_files
 
 
 def _run_validate_job(
@@ -51,13 +52,19 @@ def _run_validate_job(
     ai_upload_path: Optional[Path],
     actual_filename: str,
     ai_filename: Optional[str] = None,
+    llm_config=None,
 ):
     """Worker thread — runs convert (if needed) → align → metrics →
     calibration → report, posting progress to ``VALIDATE_JOBS[run_id]``.
+    ``llm_config`` is the config loaded at submit, used by every stage.
     """
     from ai_paper_review.provenance import format_provenance, now_iso
     launched_at = now_iso()
     try:
+        cfg = llm_config or load_config()
+        val_provider = cfg.resolve_provider("validation")
+        val_model = cfg.resolve_model("validation")
+        val_base_url = cfg.resolve_base_url_for_stage("validation")
         is_md = actual_in.suffix.lower() == ".md"
         already_structured = False
         if is_md:
@@ -67,14 +74,24 @@ def _run_validate_job(
 
         # Resolve the paper title from the linked AI review job (if any) so
         # actual_converted.md gets the correct title rather than "Unknown".
-        _paper_title_for_converted = actual_in.stem  # fallback: filename stem
+        actual_stem = actual_in.stem.removeprefix(HUMAN_UPLOAD_PREFIX)
+        _paper_title_for_converted = actual_stem  # fallback: filename stem
+        # Reviewers + attribution tables come from the linked review job's
+        # database; uploads and jobs without a stored id use the default.
+        db_reviewers, db_tables = REVIEWERS, DEFAULT_DB_TABLES
         if ai_job_id:
             with JOBS_LOCK:
                 _linked_ai_job = JOBS.get(ai_job_id)
             if _linked_ai_job:
                 _paper_title_for_converted = (
-                    _linked_ai_job.get("paper_title") or actual_in.stem
+                    _linked_ai_job.get("paper_title") or actual_stem
                 )
+                _ui_path = _linked_ai_job.get("ui_state_json")
+                _db_id = (json.loads(Path(_ui_path).read_text()).get("database_id")
+                          if _ui_path and Path(_ui_path).is_file() else None)
+                if _db_id and _db_id != "__default__":
+                    _db = parse_reviewer_database(str(resolve_database_path(_db_id)))
+                    db_reviewers, db_tables = _db.reviewers, _db.tables
 
         if is_md and already_structured:
             _set_validate_job(run_id, status="loading",
@@ -83,28 +100,29 @@ def _run_validate_job(
         else:
             _set_validate_job(run_id, status="converting",
                               message="Converting human review to structured markdown via LLM…")
-            cv_cfg = load_config()
-            val_provider = cv_cfg.resolve_provider("validation")
-            val_has_key = cv_cfg.resolve_api_key(val_provider)
-            if not val_has_key and not is_local_provider(cv_cfg, val_provider):
-                envs = ", ".join(env_vars_for(val_provider)) or "(none)"
+            val_has_key = cfg.resolve_api_key(val_provider, val_base_url)
+            if not val_has_key and not is_local_provider(cfg, val_provider, "validation"):
+                envs = ", ".join(env_vars_for(val_provider, val_base_url))
+                env_clause = f", or export one of these env vars: {envs}" if envs else ""
                 raise RuntimeError(
                     f"API key missing for validation provider '{val_provider}'. "
-                    f"Add it under api_keys.{val_provider} in config.yaml, or "
-                    f"export one of these env vars: {envs}."
+                    f"Add it under api_keys.{val_provider} in config.yaml{env_clause}."
                 )
             raw = actual_in.read_text()
             extracted = cr.llm_extract(
-                raw, DEFAULT_DB_TABLES.category_vocab,
+                raw, db_tables.category_vocab,
+                provider_override=val_provider,
+                model_override=val_model,
                 run_dir=run_dir,
+                llm_config=cfg,
             )
             extracted = cr.normalize_extracted(
-                extracted, DEFAULT_DB_TABLES.category_vocab,
+                extracted, db_tables.category_vocab,
             )
 
             md_lines = [
                 "# Converted Reviews", "",
-                f"**Paper ID:** {actual_in.stem}",
+                f"**Paper ID:** {actual_stem}",
                 f"**Title:** {_paper_title_for_converted}",
                 f"**Notes:** Converted from {actual_in.name} via web UI "
                 f"(LLM, input was {'markdown' if is_md else 'text'}).",
@@ -159,11 +177,7 @@ def _run_validate_job(
             chunk_labels=chunk_labels, completed_chunk_indices=[],
         )
 
-        cfg = load_config()
         llm_client = make_client(cfg, use_case="validation")
-        val_provider = cfg.resolve_provider("validation")
-        val_model = cfg.resolve_model("validation")
-        val_base_url = cfg.resolve_base_url_for_stage("validation")
         logger.info("Validation using LLM: provider=%s model=%s",
                     val_provider, val_model)
 
@@ -184,14 +198,15 @@ def _run_validate_job(
             llm_client,
             run_dir=run_dir,
             on_chunk_done=_chunk_progress,
-            chunk_stagger_s=cfg.request_delay,
+            chunk_stagger_s=cfg.request_delay_for(val_provider),
+            max_concurrent=cfg.max_concurrent,
         )
 
         _set_validate_job(run_id, status="computing",
                           message="Computing metrics and calibration deltas")
         metrics = compute_metrics(alignment)
         calibration = build_calibration(
-            alignment, ai_report, REVIEWERS, DEFAULT_DB_TABLES,
+            alignment, ai_report, db_reviewers, db_tables,
             actual_reviews=actual.get("actual_reviews", []),
         )
         llm_comparison = alignment.get("llm_comparison")
@@ -202,7 +217,7 @@ def _run_validate_job(
         report_md = format_report(
             actual, ai_report, alignment, metrics, calibration,
             llm_comparison=llm_comparison,
-            tables=DEFAULT_DB_TABLES,
+            tables=db_tables,
         )
         provenance = format_provenance(
             provider=val_provider,
@@ -367,12 +382,23 @@ def validate_run():
         flash("Please either upload an AI review file or pick a prior review.")
         return redirect(url_for("validate_form"))
 
+    try:
+        cfg = load_config()
+    except Exception as e:
+        # ValueError from load_config is already flashed by the app-wide
+        # context processor.
+        if not isinstance(e, ValueError):
+            flash(f"Could not load config: {e}")
+        return redirect(url_for("validate_form"))
+
     run_id = _timestamped_run_id("validation")
     run_dir = RUNS_DIR / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
 
+    # Prefix each upload with its side so same-named human/AI files can't
+    # collide, and neither can clobber a worker artifact (actual_converted.md).
     safe_actual = _safe_upload_name(actual_file.filename, default_ext=".md")
-    actual_in = run_dir / safe_actual
+    actual_in = run_dir / f"{HUMAN_UPLOAD_PREFIX}{safe_actual}"
     actual_file.save(str(actual_in))
     if not actual_in.exists():
         flash(f"Upload failed: human-review file was not saved to {actual_in}.")
@@ -381,7 +407,7 @@ def validate_run():
     ai_upload_path: Optional[Path] = None
     if not ai_job_id:
         safe_ai = _safe_upload_name(ai_file.filename, default_ext=".md")
-        ai_upload_path = run_dir / safe_ai
+        ai_upload_path = run_dir / f"{AI_UPLOAD_PREFIX}{safe_ai}"
         ai_file.save(str(ai_upload_path))
         if not ai_upload_path.exists():
             flash(f"Upload failed: AI-review file was not saved to {ai_upload_path}.")
@@ -401,13 +427,9 @@ def validate_run():
     # Resolve the validation-stage LLM identity at submit time so the
     # status page can show it from the first poll, before the worker
     # has progressed past the early conversion stage.
-    try:
-        cfg = load_config()
-        val_provider = cfg.resolve_provider("validation")
-        val_model = cfg.resolve_model("validation")
-        val_base_url = cfg.resolve_base_url_for_stage("validation") or ""
-    except Exception:
-        val_provider = val_model = val_base_url = ""
+    val_provider = cfg.resolve_provider("validation")
+    val_model = cfg.resolve_model("validation")
+    val_base_url = cfg.resolve_base_url_for_stage("validation") or ""
 
     with VALIDATE_JOBS_LOCK:
         VALIDATE_JOBS[run_id] = {
@@ -428,7 +450,7 @@ def validate_run():
     t = threading.Thread(
         target=_run_validate_job,
         args=(run_id, run_dir, actual_in, ai_job_id, ai_upload_path,
-              actual_file.filename, ai_label),
+              actual_file.filename, ai_label, cfg),
         daemon=True,
     )
     t.start()
@@ -471,6 +493,10 @@ def validate_poll(run_id: str):
 
 @app.get("/validation/<run_dir>/download/<fname>")
 def validate_download(run_dir: str, fname: str):
+    if "/" in run_dir or "\\" in run_dir or ".." in run_dir:
+        abort(404)
+    if not _is_validation_dir_name(run_dir):
+        abort(404)
     # Download whitelist — primary outputs plus the intermediate
     # artifacts useful for debugging a run's verdicts.
     if fname not in (
@@ -509,6 +535,9 @@ def validate_result_view(run_dir: str):
     except Exception as e:
         flash(f"Couldn't load validation state: {e}")
         return redirect(url_for("about"))
+    if state.get("status") == "error":
+        flash(f"Validation {run_dir!r} failed: {state.get('error') or 'unknown error'}")
+        return redirect(url_for("validate_form"))
     # Fold the AI-review source into the Inputs catalog. For uploads,
     # list_run_files will see and dedup it; for "prior AI review" runs
     # it lives in a different run_dir so this is how it shows up.
@@ -546,6 +575,20 @@ def validate_delete(run_dir: str):
     if not _is_validation_dir_name(run_dir):
         abort(404)
     d = RUNS_DIR / run_dir
+    # Refuse to delete a run whose worker may still be writing into it.
+    with VALIDATE_JOBS_LOCK:
+        job = VALIDATE_JOBS.get(run_dir)
+    if job is not None:
+        status = job.get("status")
+    else:
+        try:
+            status = json.loads((d / "_ui_state.json").read_text()).get("status") or "done"
+        except Exception:
+            # No readable state: list_validations shows these as "error".
+            status = "error"
+    if status not in ("done", "error"):
+        flash(f"Validation {run_dir!r} is still running; wait for it to finish before deleting.")
+        return redirect(url_for("validate_form"))
     # Drop the in-memory entry first so the Recent-validations table
     # doesn't keep showing a stale row even if a worker thread is still
     # writing into the unlinked directory (file handles survive unlink
@@ -593,14 +636,18 @@ def list_validations() -> List[Dict[str, Any]]:
         '?' since no file was copied in.
         """
         try:
-            candidates = [
-                f for f in run_dir.iterdir()
-                if f.is_file()
-                and f.suffix == ".md"
-                and f.name not in _INTERNAL_RUN_FILES
-            ]
+            files = [f for f in run_dir.iterdir() if f.is_file()]
         except OSError:
             return "?"
+        for f in files:
+            if f.name.startswith(AI_UPLOAD_PREFIX):
+                return f.name[len(AI_UPLOAD_PREFIX):]
+        candidates = [
+            f for f in files
+            if f.suffix == ".md"
+            and f.name not in _INTERNAL_RUN_FILES
+            and not f.name.startswith(HUMAN_UPLOAD_PREFIX)
+        ]
         if len(candidates) == 1:
             return candidates[0].name
         if len(candidates) > 1:

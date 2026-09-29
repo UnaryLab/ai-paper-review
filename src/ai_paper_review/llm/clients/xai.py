@@ -19,10 +19,10 @@ Uploaded file IDs are cached per ``pdf_path`` on the client instance so
 that multiple reviewers running in parallel against the same paper only
 upload it once. xAI does not auto-delete uploaded files — use the xAI
 dashboard or call :meth:`XaiClient.cleanup_uploaded_files` to purge.
-Only grok-4-class models accept file attachments
-(``grok-4`` / ``grok-4-fast`` / ``grok-4.20-reasoning``); picking
-grok-3 / grok-2-vision with a PDF will return an error from the API
-and the pipeline's retry wrapper will surface it.
+Only models with agentic tool calling accept file attachments
+(e.g. ``grok-4.20``, ``grok-4.5``, ``grok-4.6``, ``grok-4.7``); other
+models return an API error for a PDF, which the pipeline's retry
+wrapper surfaces.
 """
 from __future__ import annotations
 
@@ -31,9 +31,37 @@ import threading
 from pathlib import Path
 from typing import Dict, Optional
 
+from .base import ReplyBlockedError
+from .openai import chat_reply_text
+
 logger = logging.getLogger("llm_client")
 
 _DEFAULT_XAI_BASE_URL = "https://api.x.ai/v1"
+
+
+def _responses_reply_text(resp, model: str, max_tokens: int) -> str:
+    """Text of a Responses API reply (``output_text`` joins every
+    ``output_text`` block). Raises ReplyBlockedError when the model
+    refused, a content filter stopped it, or it used the whole budget
+    without text."""
+    for item in getattr(resp, "output", None) or []:
+        for block in getattr(item, "content", None) or []:
+            if getattr(block, "type", None) == "refusal":
+                raise ReplyBlockedError(
+                    f"{model} refused the request: {getattr(block, 'refusal', '')}")
+    reason = getattr(getattr(resp, "incomplete_details", None), "reason", None)
+    if reason == "content_filter":
+        raise ReplyBlockedError(
+            f"{model} reply was stopped by the content filter "
+            f"(incomplete_details.reason=content_filter).")
+    output = resp.output_text or ""
+    if not output and reason == "max_output_tokens":
+        raise ReplyBlockedError(
+            f"{model} used up its output budget (max_tokens="
+            f"{max_tokens}) before writing any text. Reasoning tokens "
+            f"count against this budget; raise max_tokens."
+        )
+    return output
 
 
 class XaiClient:
@@ -72,7 +100,7 @@ class XaiClient:
             ],
             max_tokens=max_tokens,
         )
-        return resp.choices[0].message.content or ""
+        return chat_reply_text(resp.choices[0], self.model, max_tokens)
 
     def _complete_with_pdf(
         self,
@@ -99,21 +127,7 @@ class XaiClient:
             }],
             max_output_tokens=max_tokens,
         )
-        # The OpenAI SDK exposes ``output_text`` as a convenience that
-        # concatenates every ``output_text`` content block from the
-        # response — standard across xAI's + OpenAI's Responses API.
-        output = getattr(resp, "output_text", None)
-        if output is None:
-            # Fall back to digging through the response structure manually
-            # in case the SDK version doesn't expose the convenience field.
-            chunks = []
-            for item in getattr(resp, "output", None) or []:
-                for block in getattr(item, "content", None) or []:
-                    text = getattr(block, "text", None)
-                    if isinstance(text, str):
-                        chunks.append(text)
-            output = "".join(chunks)
-        return output or ""
+        return _responses_reply_text(resp, self.model, max_tokens)
 
     def _get_or_upload(self, pdf_path: str) -> str:
         """Return a cached file_id for this PDF, uploading it once if needed.

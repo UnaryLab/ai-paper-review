@@ -48,53 +48,23 @@ def format_report(
     category_to_persona = tables.category_to_persona if tables else {}
     out: List[str] = []
     out.append("# Review Validation Report\n\n")
-    out.append(f"**Title:** {actual.get('title', actual.get('paper_id', 'unknown'))}\n\n")
-    out.append(f"**Venue:** {actual.get('venue', 'n/a')}\n\n")
+    out.append(f"**Title:** {actual.get('title') or actual.get('paper_id') or 'unknown'}\n\n")
+    out.append(f"**Venue:** {actual.get('venue') or 'n/a'}\n\n")
 
-    # --- LLM semantic comparison (new) ---
-    # Appears near the top since it's the human-readable "what's different"
-    # summary; the structured metrics tables below remain authoritative.
+    # --- LLM semantic comparison ---
+    # Count summary of the LLM similarity matrix and the model that scored it.
     if llm_comparison and (llm_comparison.get("summary") or llm_comparison.get("raw")):
         out.append("## Semantic Comparison (LLM)\n\n")
         out.append(
-            "_The following is an LLM's natural-language comparison of the human "
-            "review against the AI review. It reasons about **meaning** rather than "
-            "wording — paraphrases and different angles on the same issue count as "
-            "matches. Embedding-based metrics below are authoritative; this section "
-            f"adds interpretation._ (model: `{llm_comparison.get('llm_model', '?')}`)\n\n"
+            "_Count summary of the LLM similarity matrix: the number of hits, "
+            "misses, and false alarms, and the number of (human, AI) comment "
+            "pairs parsed from the LLM response. The LLM scores each pair by "
+            "**meaning** rather than wording, so paraphrases of the same issue "
+            "count as matches. The metrics below are computed from the same "
+            f"matrix._ (model: `{llm_comparison.get('llm_model', '?')}`)\n\n"
         )
         if llm_comparison.get("summary"):
             out.append(f"**Summary:** {llm_comparison['summary']}\n\n")
-
-        matches = llm_comparison.get("matches", [])
-        if matches:
-            out.append("**Per-comment verdicts:**\n\n")
-            for m in matches:
-                icon = {"same": "✅", "partial": "🟡",
-                        "different": "⚠️", "missed": "❌"}.get(m.get("verdict"), "•")
-                ai_list = ", ".join(m.get("ai_ids", [])) or "(none)"
-                rationale = m.get("rationale", "")
-                out.append(
-                    f"- {icon} **{m['actual_id']}** ↔ {ai_list} "
-                    f"— _{m.get('verdict', '?')}_"
-                    + (f" — {rationale}" if rationale else "")
-                    + "\n"
-                )
-            out.append("\n")
-
-        if llm_comparison.get("missed"):
-            out.append("**Missed by AI (LLM view):**\n\n")
-            for item in llm_comparison["missed"]:
-                out.append(f"- `{item['actual_id']}`: {item['gist']}\n")
-            out.append("\n")
-
-        if llm_comparison.get("extras"):
-            out.append("**AI extras (LLM view):**\n\n")
-            for item in llm_comparison["extras"][:15]:
-                out.append(f"- `{item['ai_id']}`: {item['gist']}\n")
-            if len(llm_comparison["extras"]) > 15:
-                out.append(f"- _...and {len(llm_comparison['extras']) - 15} more_\n")
-            out.append("\n")
 
     n_selected_ai = len(ai_report.get("selected") or [])
     out.append("## Summary Metrics\n\n")
@@ -127,15 +97,16 @@ def format_report(
             f"**Primary AI match** ({p['reviewer_id']} / {p['persona']}): "
             f"{p['summary']}\n\n"
         )
-        if h["supporting_ai"]:
+        # supporting_ai is sorted by sim, so the first entry per reviewer is its best.
+        others: Dict[Any, float] = {}
+        for s in h["supporting_ai"]:
+            rid = s["ai"].get("reviewer_id")
+            if rid != p.get("reviewer_id"):
+                others.setdefault(rid, s["sim"])
+        if others:
+            out.append(f"Also raised by {len(others)} other AI reviewer(s): ")
             out.append(
-                f"Also raised by {h['n_supporting_reviewers']} other AI reviewer(s): "
-            )
-            out.append(
-                ", ".join(
-                    f"{s['ai']['reviewer_id']} ({s['sim']:.2f})"
-                    for s in h["supporting_ai"][:5]
-                )
+                ", ".join(f"{rid} ({sim:.2f})" for rid, sim in list(others.items())[:5])
             )
             out.append("\n\n")
 
@@ -156,8 +127,7 @@ def format_report(
     # --- False alarms ---
     out.append("## False Alarms — AI Comments Not Raised by Any Human\n\n")
     out.append(
-        "_(Note: plain false alarms aren't necessarily wrong — humans may have missed them. "
-        "But comments marked ⚠️ **contradict a human strength** and are a strong calibration signal.)_\n\n"
+        "_(Note: false alarms aren't necessarily wrong, humans may have missed them.)_\n\n"
     )
     if not alignment["false_alarms"]:
         out.append("_None._\n\n")

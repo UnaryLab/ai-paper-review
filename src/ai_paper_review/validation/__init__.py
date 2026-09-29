@@ -14,7 +14,8 @@ Stages (in the order the pipeline runs them):
                       Auto-run by the web flow when the upload isn't
                       already in that schema; skipped otherwise.
   - ``loading``     — parse human + AI markdown into flat comment lists.
-  - ``alignment``   — single-call batch LLM similarity matrix.
+  - ``alignment``   - chunked, parallel LLM calls that build the
+                      human x AI similarity matrix.
   - ``metrics``     — precision / recall / F1 / severity-weighted recall.
   - ``calibration`` — per-paper calibration delta builder.
   - ``reporting``   — markdown validation report formatter.

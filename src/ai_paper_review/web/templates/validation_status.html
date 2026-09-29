@@ -117,7 +117,15 @@
   async function poll() {
     try {
       const r = await fetch(pollUrl, {cache: "no-store"});
-      if (!r.ok) return;
+      if (r.status === 404) {
+        // Job no longer in memory (server restart): the result page
+        // renders the stored state or explains why it can't.
+        document.getElementById("status-message").textContent =
+          "This job is no longer tracked by the server; opening the result page…";
+        window.location.href = resultUrl;
+        return;
+      }
+      if (!r.ok) { setTimeout(poll, 5000); return; }
       const j = await r.json();
 
       document.getElementById("status-pill").textContent = j.status;

@@ -22,3 +22,10 @@ SEVERITY_WEIGHT = {
 # in practice without runaway cost on persistent failures (each retry is
 # a full reviewer call).
 EMPTY_COMMENT_RETRIES = 5
+
+
+# Whole-reviewer re-runs of the clarity reviewer after a non-fatal call
+# error, with a fixed pause (seconds) between runs. Rate-limit backoff
+# already happens inside RetryClient.
+CLARITY_RERUNS = 2
+CLARITY_RERUN_DELAY = 5.0

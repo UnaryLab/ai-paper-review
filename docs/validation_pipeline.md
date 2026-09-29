@@ -1,6 +1,6 @@
 # Validation Pipeline
 
-The pipeline lives under `ai_paper_review.validation` and is driven by the web worker on `POST /validation`, which runs conversion + alignment + calibration in one click. The web flow accepts raw text (HotCRP / OpenReview / generic) and inserts a human-review conversion stage that reshapes it into the AI-review markdown schema before alignment; inputs already in that schema skip conversion automatically.
+The pipeline lives under `ai_paper_review.validation` and is driven by the web worker on `POST /validation`, which runs conversion + alignment + calibration in one click. The web flow accepts raw text (HotCRP / OpenReview / generic) and inserts a human-review conversion stage that reshapes it into the AI-review markdown schema before alignment; inputs already in that schema skip conversion automatically. The LLM config is loaded when the run is submitted, and conversion, alignment, and the report's provenance block all use that copy; a config that fails to load stops the submit with a message, and no run is created. Uploaded files are stored in the run directory as `human__<name>` (human review) and `ai__<name>` (AI review).
 
 ---
 
@@ -82,8 +82,8 @@ Workflow-level flow. The human-review conversion stage only runs when the upload
   │   In:  alignment + metrics + calibration delta + llm_comparison  │
   │   Out: markdown report with up to 10 sections:                   │
   │          header + paper metadata                                 │
-  │          Semantic Comparison (LLM) — always present; summarises  │
-  │            the batch alignment (hits/misses/false-alarm counts)  │
+  │          Semantic Comparison (LLM): if both sides have comments; │
+  │            hit, miss, false-alarm, and parsed-pair counts        │
   │          Summary Metrics table                                   │
   │          Hits                                                    │
   │          Misses                                                  │
@@ -115,6 +115,8 @@ Workflow-level flow. The human-review conversion stage only runs when the upload
 
 The `calibration_delta.json` output of each run is the input to the separate [Aggregation](aggregation.md) reporter, which turns many runs' worth of deltas into reviewer-database tuning recommendations.
 
+The reviewer DB used by Stages 1 and 5 (category vocabulary and persona attribution tables) is the database of the review job the AI review came from, when the AI review is picked from a previous review job. An uploaded AI review uses the bundled Computer Architecture database. The `ai-paper-review-validate` CLI takes the database from `--db`, defaulting to the bundled Computer Architecture database.
+
 ---
 
 ## 3. Stage-by-stage reference
@@ -128,4 +130,4 @@ The `calibration_delta.json` output of each run is the input to the separate [Ag
 | 5 | Calibration delta        | alignment + AI report + reviewer DB   | per-persona stats + miss / sub-rating attributions + suggestions | 0 |
 | 6 | Report formatting        | alignment + metrics + calibration + llm_comparison | validation_report.md (up to 10 sections) | 0 |
 
-Only Stages 1 and 3 hit the network. Stage 3 splits the N human comments into chunks of 5, runs one LLM call per chunk (all M AI comments each), and assembles the results into a single N × M matrix. The chunked design keeps each call's output-token budget small enough for subscription-tier providers while still returning the full matrix in one pass — avoiding the O(N·M) per-pair call approach.
+Only Stages 1 and 3 hit the network. Stage 3 splits the N human comments into chunks of 5, runs one LLM call per chunk (all M AI comments each), and assembles the results into a single N × M matrix. The chunked design keeps each call's output-token budget small enough for subscription-tier providers while still returning the full matrix in one pass, instead of one call per (human, AI) pair. A chunk that parses 0 similarity rows fails the run; a chunk that parses fewer rows than it has pairs is marked incomplete in `alignment_llm_analysis.md`, and its missing pairs score 0.

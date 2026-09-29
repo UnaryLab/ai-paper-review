@@ -24,12 +24,15 @@ config.yaml.
 from __future__ import annotations
 
 import logging
+import math
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 logger = logging.getLogger("llm_client")
+
+DEFAULT_MODEL = "claude-sonnet-5-5"
 
 
 # Env-var fallbacks (classic names most tools recognize). Empty lists for
@@ -48,21 +51,43 @@ _ENV_FALLBACK = {
     "google_api":            ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
     "xai_api":               ["XAI_API_KEY"],
     "openai_compatible_api": ["OPENAI_API_KEY"],
-    "github_api":            ["GITHUB_TOKEN", "GITHUB_PAT"],
     "copilot_sdk":           [],
     "claude_sdk":            [],
 }
 
 _DEFAULT_BASE_URLS = {
     "xai_api":    "https://api.x.ai/v1",
-    "github_api": "https://models.github.ai/inference",
 }
 
 SUPPORTED_PROVIDERS = (
     "anthropic_api", "openai_api", "google_api", "xai_api",
-    "openai_compatible_api", "github_api",
+    "openai_compatible_api",
     "copilot_sdk", "claude_sdk",
 )
+
+
+def key_env_vars(provider: str, base_url: Optional[str]) -> list:
+    """Env vars that may supply ``provider``'s key at ``base_url``.
+    ``openai_compatible_api`` gets ``OPENAI_API_KEY`` only on OpenAI's own
+    endpoint, so the OpenAI key never goes to a third-party host."""
+    if provider == "openai_compatible_api":
+        from .utils import is_openai_endpoint
+        if not is_openai_endpoint(base_url):
+            return []
+    return list(_ENV_FALLBACK.get(provider, []))
+
+
+def check_provider(provider: str, field: str = "provider") -> None:
+    """Raise ``ValueError`` if ``provider`` is not a supported name."""
+    if provider == "github_api":
+        raise ValueError(
+            "github_api was removed: GitHub Models is retired; choose another provider"
+        )
+    if provider not in SUPPORTED_PROVIDERS:
+        raise ValueError(
+            f"Unsupported {field} {provider!r}. "
+            f"Supported: {', '.join(SUPPORTED_PROVIDERS)}"
+        )
 
 
 # Sentinel value the ``PAPER_REVIEW_VALIDATION_*_OVERRIDE`` env vars can
@@ -73,6 +98,9 @@ SUPPORTED_PROVIDERS = (
 # blank. See ``_env_override_or_inherit`` inside ``load_config``.
 _VALIDATION_INHERIT_SENTINEL = "__inherit__"
 
+# Default for optional args where ``None`` is a meaningful value.
+_UNSET: Any = object()
+
 
 @dataclass
 class LLMConfig:
@@ -82,7 +110,7 @@ class LLMConfig:
 
         llm_review:                              # required
           provider: anthropic
-          model:    claude-sonnet-4-5-20250929
+          model:    claude-sonnet-5-5
           max_concurrent: 10
           # ... other rate-limit knobs ...
 
@@ -97,7 +125,7 @@ class LLMConfig:
     fallback. API keys are shared across stages.
     """
     review_provider: str = "anthropic_api"
-    review_model: str = "claude-sonnet-4-5-20250929"
+    review_model: str = DEFAULT_MODEL
     review_base_url: Optional[str] = None
     validation_provider: Optional[str] = None     # falls back to review_provider
     validation_model: Optional[str] = None        # falls back to review_model
@@ -110,6 +138,26 @@ class LLMConfig:
     max_retries: int = 2
     retry_base_delay: float = 5.0
     max_concurrent: int = 10
+
+    # Output-token budget for each reviewer, clarity, and markdown-repair
+    # call. Reasoning models count reasoning tokens against this budget, so
+    # the client default (4000) can run out before any review text. Models
+    # with a smaller output cap need a smaller value.
+    review_max_tokens: int = 16000
+
+    def set_review_llm(self, provider: Optional[str], model: Optional[str],
+                       base_url: Optional[str] = None) -> None:
+        """Point the review stage at ``provider`` / ``model`` (``None`` keeps
+        the current value). A new provider drops the current base_url,
+        which belongs to the old provider; ``base_url`` sets one explicitly.
+        """
+        if provider and provider != self.review_provider:
+            self.review_provider = provider
+            self.review_base_url = None
+        if model:
+            self.review_model = model
+        if base_url:
+            self.review_base_url = base_url
 
     def resolve_model(self, use_case: str) -> str:
         if use_case == "validation":
@@ -139,11 +187,29 @@ class LLMConfig:
             return _DEFAULT_BASE_URLS.get(self.resolve_provider(use_case))
         return self.review_base_url or _DEFAULT_BASE_URLS.get(self.review_provider)
 
-    def resolve_api_key(self, provider: str) -> Optional[str]:
-        """Key from config first; fall back to env vars."""
+    def request_delay_for(self, provider: str) -> float:
+        """Seconds between dispatched calls for ``provider``.
+
+        claude_sdk routes through a subscription-tier CLI that rejects
+        bursts of parallel requests, so it gets at least 1 s.
+        """
+        if provider == "claude_sdk":
+            return max(self.request_delay, 1.0)
+        return self.request_delay
+
+    def resolve_api_key(self, provider: str,
+                        base_url: Optional[str] = _UNSET) -> Optional[str]:
+        """Key from config first; fall back to env vars.
+
+        ``openai_compatible_api`` falls back to ``OPENAI_API_KEY`` only when
+        ``base_url`` (default: ``resolve_base_url(provider)``) is OpenAI's
+        own endpoint, so the OpenAI key never goes to a third-party host.
+        """
         if self.api_keys.get(provider):
             return self.api_keys[provider]
-        for ev in _ENV_FALLBACK.get(provider, []):
+        if base_url is _UNSET:
+            base_url = self.resolve_base_url(provider)
+        for ev in key_env_vars(provider, base_url):
             v = os.environ.get(ev)
             if v:
                 return v
@@ -155,8 +221,8 @@ class LLMConfig:
         Collapses the per-stage base_urls to a single mapping for callers
         that don't know which stage they're in (``probe_providers``,
         ``is_local_provider``). Review's URL wins on conflict; falls
-        through to the hardcoded defaults for xAI / GitHub Models /
-        Copilot, which have fixed endpoints.
+        through to the hardcoded default for xAI, which has a fixed
+        endpoint.
         """
         if provider == self.review_provider and self.review_base_url:
             return self.review_base_url
@@ -234,21 +300,33 @@ def load_config(path: Optional[Path] = None) -> LLMConfig:
             return v
         return config_value or None
 
-    review_provider = (
-        _env_override("PAPER_REVIEW_REVIEW_PROVIDER_OVERRIDE")
-        or review_section.get("provider")
-        or "anthropic_api"
-    ).lower()
-    review_model = (
-        _env_override("PAPER_REVIEW_REVIEW_MODEL_OVERRIDE")
-        or review_section.get("model")
-        or "claude-sonnet-4-5-20250929"
-    )
-    review_base_url = (
-        _env_override("PAPER_REVIEW_REVIEW_BASE_URL_OVERRIDE")
-        or review_section.get("base_url")
-        or None
-    )
+    def _tuning(key, cast, default, minimum):
+        """Read an ``llm_review`` tuning key. An empty YAML value (``key:``)
+        loads as None and gives the default; a bool, a non-number, a
+        non-finite number, or a value below ``minimum`` raises ValueError."""
+        value = review_section.get(key)
+        if value is None:
+            return default
+        kind = "an integer" if cast is int else "a number"
+        try:
+            if isinstance(value, bool):
+                raise ValueError
+            result = cast(value)
+            if not math.isfinite(result):
+                raise ValueError
+        except (TypeError, ValueError, OverflowError):
+            raise ValueError(
+                f"config.yaml llm_review.{key} must be {kind}, got {value!r}"
+            ) from None
+        if result < minimum:
+            raise ValueError(
+                f"config.yaml llm_review.{key} must be >= {minimum}, got {value!r}"
+            )
+        return result
+
+    review_provider = (review_section.get("provider") or "anthropic_api").lower()
+    review_model = review_section.get("model") or DEFAULT_MODEL
+    review_base_url = review_section.get("base_url") or None
 
     # Validation-side env vars accept a sentinel — ``__inherit__`` — that
     # means "for this session, skip config.yaml's llm_validation block
@@ -268,9 +346,25 @@ def load_config(path: Optional[Path] = None) -> LLMConfig:
         "PAPER_REVIEW_VALIDATION_MODEL_OVERRIDE",
         validation_section.get("model"),
     )
+    # A provider override drops the YAML base_url, which belongs to the
+    # YAML provider (same rule as ``set_review_llm``).
+    yaml_validation_base_url = validation_section.get("base_url")
+    # Compare with the provider the YAML block resolves to (its own, or
+    # the inherited review provider), not just its ``provider`` key.
+    yaml_effective_provider = (
+        (validation_section.get("provider") or review_provider or "").lower() or None
+    )
+    review_provider_override = (
+        (_env_override("PAPER_REVIEW_REVIEW_PROVIDER_OVERRIDE") or "").lower() or None
+    )
+    effective_provider = (
+        validation_provider or review_provider_override or review_provider
+    )
+    if effective_provider != yaml_effective_provider:
+        yaml_validation_base_url = None
     validation_base_url = _env_override_or_inherit(
         "PAPER_REVIEW_VALIDATION_BASE_URL_OVERRIDE",
-        validation_section.get("base_url"),
+        yaml_validation_base_url,
     )
 
     cfg = LLMConfig(
@@ -283,26 +377,18 @@ def load_config(path: Optional[Path] = None) -> LLMConfig:
         api_keys={k.lower(): v for k, v in (data.get("api_keys") or {}).items()},
         config_path=str(path) if path else None,
         # Rate-limit knobs live under llm_review (the high-volume path).
-        request_delay=float(review_section.get("request_delay", 0.0)),
-        max_retries=int(review_section.get("max_retries", 2)),
-        retry_base_delay=float(review_section.get("retry_base_delay", 5.0)),
-        max_concurrent=int(review_section.get("max_concurrent", 10)),
+        request_delay=_tuning("request_delay", float, 0.0, 0),
+        max_retries=_tuning("max_retries", int, 2, 0),
+        retry_base_delay=_tuning("retry_base_delay", float, 5.0, 0),
+        max_concurrent=_tuning("max_concurrent", int, 10, 1),
+        review_max_tokens=_tuning("max_tokens", int, LLMConfig.review_max_tokens, 1),
     )
-    # claude_sdk routes through a subscription-tier CLI and cannot handle
-    # simultaneous parallel requests without hitting rate-limit rejection.
-    # Enforce a minimum 1 s stagger between dispatched calls when no explicit
-    # delay is set, so review and validation chunks don't burst simultaneously.
-    if cfg.review_provider == "claude_sdk" and cfg.request_delay < 1.0:
-        cfg.request_delay = 1.0
-
-    if cfg.review_provider not in SUPPORTED_PROVIDERS:
-        raise ValueError(
-            f"Unsupported review_provider {cfg.review_provider!r}. "
-            f"Supported: {', '.join(SUPPORTED_PROVIDERS)}"
-        )
-    if cfg.validation_provider and cfg.validation_provider not in SUPPORTED_PROVIDERS:
-        raise ValueError(
-            f"Unsupported validation_provider {cfg.validation_provider!r}. "
-            f"Supported: {', '.join(SUPPORTED_PROVIDERS)}"
-        )
+    cfg.set_review_llm(
+        review_provider_override,
+        _env_override("PAPER_REVIEW_REVIEW_MODEL_OVERRIDE"),
+        _env_override("PAPER_REVIEW_REVIEW_BASE_URL_OVERRIDE"),
+    )
+    check_provider(cfg.review_provider, "review_provider")
+    if cfg.validation_provider:
+        check_provider(cfg.validation_provider, "validation_provider")
     return cfg

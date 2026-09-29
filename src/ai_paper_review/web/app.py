@@ -23,10 +23,11 @@ from __future__ import annotations
 
 import logging
 import os
+import secrets
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from flask import Flask
+from flask import Flask, flash
 
 from ai_paper_review import bundled_db_dir, default_db_path
 from ai_paper_review.llm.config import load_config
@@ -63,7 +64,7 @@ DOCS_ROOT = _find_docs_root()
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024  # 50 MB per upload
-app.secret_key = os.environ.get("FLASK_SECRET", "dev-secret-change-me")
+app.secret_key = os.environ.get("FLASK_SECRET") or secrets.token_hex(32)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("ai_paper_review.web")
@@ -76,6 +77,9 @@ def _inject_config_status() -> Dict[str, Any]:
     try:
         cfg = load_config()
         missing = not cfg.config_path
+    except ValueError as e:
+        flash(str(e))
+        missing = False
     except Exception:
         missing = True
     return {

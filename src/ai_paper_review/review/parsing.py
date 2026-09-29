@@ -93,8 +93,13 @@ def parse_review_markdown(text: str) -> Dict[str, Any]:
     """
     result: Dict[str, Any] = {}
 
+    # Header fields live above the first comment; comment bodies carry
+    # their own "- **Summary:**"-style lines that must not match here.
+    first_comment = re.search(r"#{2,4}\s+Comment\s+\d+", text, re.IGNORECASE)
+    header_text = text[:first_comment.start()] if first_comment else text
+
     def _extract_field(label: str) -> str:
-        return extract_header_field(text, label)
+        return extract_header_field(header_text, label)
 
     result["reviewer_id"] = _extract_field("Reviewer ID")
     result["domain"] = _extract_field("Domain")
@@ -114,7 +119,8 @@ def parse_review_markdown(text: str) -> Dict[str, Any]:
 
     conf = _extract_field("Confidence")
     try:
-        result["confidence"] = int(re.sub(r"[^\d]", "", conf or "3") or "3")
+        m = re.search(r"\d+", conf or "")
+        result["confidence"] = int(m.group()) if m else 3
     except (ValueError, TypeError):
         result["confidence"] = 3
 
@@ -158,7 +164,7 @@ def parse_review_markdown(text: str) -> Dict[str, Any]:
                      "Summary", "Description", "Suggestion", "Keywords"]
 
     comments = []
-    rid = result.get("reviewer_id", "R000")
+    rid = result.get("reviewer_id") or "R000"
     for idx, block in enumerate(comment_blocks, start=1):
         # Trim anything after the next heading if the split regex captured
         # into an adjacent section (e.g. "## Sub-Ratings" after the last
@@ -184,7 +190,7 @@ def parse_review_markdown(text: str) -> Dict[str, Any]:
             pat = re.compile(
                 r"(?:^|\n)[ \t]*-?[ \t]*\**\s*"
                 + re.escape(label)
-                + r"\s*\**\s*:\s*(?:\**\s*)?(.+?)"
+                + r"\s*\**\s*:[ \t]*(?:\**[ \t]*)?(.*?)"
                 + terminator,
                 re.IGNORECASE | re.DOTALL,
             )

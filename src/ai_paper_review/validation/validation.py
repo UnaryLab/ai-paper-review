@@ -20,6 +20,7 @@ import json
 import logging
 from pathlib import Path
 
+from ai_paper_review import default_db_path
 from ai_paper_review.review.reviewer_db import parse_reviewer_database
 
 from .alignment import align_comments
@@ -33,8 +34,6 @@ logger = logging.getLogger("validator")
 
 def main() -> None:
     """Align + metrics + per-paper calibration + markdown report."""
-    script_dir = Path(__file__).resolve().parent
-
     ap = argparse.ArgumentParser(
         prog="ai-paper-review-validate",
         description=(
@@ -74,7 +73,7 @@ def main() -> None:
         args.calibration_out
         or str(actual_path.with_name(f"{actual_path.stem}_calibration.json"))
     )
-    db = args.db or str(script_dir / "comparch_reviewer_db.md")
+    db = args.db or str(default_db_path())
 
     actual = load_actual(args.actual)
     ai_report = load_ai(args.ai_review)
@@ -109,6 +108,8 @@ def main() -> None:
         ai_report["flat_comments"],
         llm_client,
         run_dir=out_dir,
+        chunk_stagger_s=cfg.request_delay_for(val_provider),
+        max_concurrent=cfg.max_concurrent,
     )
 
     metrics = compute_metrics(alignment)

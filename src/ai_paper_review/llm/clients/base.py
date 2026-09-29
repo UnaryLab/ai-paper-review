@@ -25,3 +25,17 @@ class LLMClient(Protocol):
         max_tokens: int = 4000,
         pdf_path: Optional[str] = None,
     ) -> str: ...
+
+
+class FatalLLMError(RuntimeError):
+    """A failure that repeating the same call cannot fix: a hard usage
+    limit, a missing CLI, or failed authentication. ``RetryClient`` and
+    the reviewers' empty-comment loops never retry it; it stops the run.
+    """
+
+
+class ReplyBlockedError(RuntimeError):
+    """The model refused, a safety filter blocked the prompt or reply, or
+    the output budget ran out before any text. Asking again gives the same
+    result, so ``RetryClient`` and the clarity re-run loop do not retry it.
+    """

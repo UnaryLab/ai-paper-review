@@ -6,7 +6,7 @@
     <p class="lede">
       Pick which LLM runs paper review and which runs validation. 
       Config is initialized at <code>{{ config_path }}</code>
-      {% if not cfg or not cfg.config_path %} <em>(not found — create one from <code>config.example.yaml</code>)</em>{% endif %}
+      {% if not cfg or not cfg.config_path %} <em>(not found: create one from <code>config.example.yaml</code>)</em>{% endif %}
       {% if overrides_active %}
         <br><span class="pill pill-info">session overrides active</span>
         <em>The values below differ from <code>config.yaml</code>. Use <strong>Reset to config.yaml</strong> below to clear them.</em>
@@ -70,10 +70,10 @@
         <strong>Review provider</strong>
       </label>
       <select name="review_provider" id="review_provider" required style="min-width: 20rem;">
-        {% for p in providers %}
+        {% for p in provider_options %}
           <option value="{{ p.name }}"
                   {% if cfg and cfg.review_provider == p.name %}selected{% endif %}>
-            {{ p.label }}{% if p.configured %} ✓{% else %} (no key){% endif %}
+            {{ p.label }}{% if p.configured %} ✓{% elif p.configured is defined %} (no key){% endif %}
           </option>
         {% endfor %}
       </select>
@@ -83,7 +83,7 @@
       </label>
       <input type="text" name="review_model" id="review_model" required
              value="{{ cfg.review_model if cfg else '' }}"
-             placeholder="e.g. claude-sonnet-4-6"
+             placeholder="e.g. claude-sonnet-5-5"
              style="min-width: 24rem;">
 
       <label for="review_base_url" style="display:block; margin-top: 1rem;">
@@ -96,7 +96,7 @@
       <p class="hint">
         Only needed for Azure OpenAI, local servers (Ollama / llama.cpp / vLLM),
         or custom OpenAI-compatible proxies. Leave blank for managed APIs/SDKs
-        (Anthropic, OpenAI cloud, Google, xAI, GitHub Models, Copilot SDK).
+        (Anthropic, OpenAI cloud, Google, xAI, Copilot SDK).
       </p>
 
       <h2 style="margin-top: 1rem;">2. Validation model</h2>
@@ -129,11 +129,11 @@
         <strong>Validation provider</strong> <span class="muted">(optional)</span>
       </label>
       <select name="validation_provider" id="validation_provider" style="min-width: 20rem;">
-        <option value="" {% if not (cfg and cfg.validation_provider) %}selected{% endif %}>— inherit from review provider —</option>
-        {% for p in providers %}
+        <option value="" {% if not (cfg and cfg.validation_provider) %}selected{% endif %}>(inherit from review provider)</option>
+        {% for p in provider_options %}
           <option value="{{ p.name }}"
                   {% if cfg and cfg.validation_provider == p.name %}selected{% endif %}>
-            {{ p.label }}{% if p.configured %} ✓{% else %} (no key){% endif %}
+            {{ p.label }}{% if p.configured %} ✓{% elif p.configured is defined %} (no key){% endif %}
           </option>
         {% endfor %}
       </select>
@@ -156,13 +156,13 @@
 
       <div style="margin-top: 2rem; display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap;">
         <button type="submit" name="action" value="apply" class="primary">Apply for this session</button>
-        <button type="submit" name="action" value="reset" class="button"
+        <button type="submit" name="action" value="reset" class="button" formnovalidate
                 onclick="return confirm('Clear all session overrides and fall back to config.yaml values?');">
           Reset to config.yaml
         </button>
         <p class="hint" style="margin: 0;">
           Applies immediately to subsequent reviews and validations.
-          <strong>Not persisted</strong> — server restart reverts to
+          <strong>Not persisted</strong>: server restart reverts to
           <code>config.yaml</code>.
         </p>
       </div>

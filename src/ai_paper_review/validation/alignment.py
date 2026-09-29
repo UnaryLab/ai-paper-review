@@ -1,8 +1,10 @@
-"""Single-call batch alignment of human ↔ AI comments via the LLM.
+"""Chunked batch alignment of human ↔ AI comments via the LLM.
 
-The LLM receives both the human-review and AI-review comments in one
-prompt and returns every pairwise similarity score. One request — no
-quota-destroying N×M fan-out.
+Human comments are split into chunks of ``_HUMAN_CHUNK_SIZE``; each
+chunk is sent in one LLM call together with the full AI comment set,
+and the calls run in parallel (at most ``max_concurrent`` at once).
+Each call returns the pairwise similarity scores for its chunk, and
+the chunk results are assembled into one N×M similarity matrix.
 
 Verdict per human comment comes from its best-scoring AI pair:
 
@@ -31,6 +33,8 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import numpy as np
 
 from ai_paper_review import prompts
+from ai_paper_review.llm.clients.base import FatalLLMError
+from ai_paper_review.llm.config import LLMConfig
 
 from .constants import BATCH_PARTIAL_THR, BATCH_SAME_THR
 
@@ -51,8 +55,9 @@ def _fmt_comments_for_prompt(
     the LLM can reason over. Uses each comment's ``id`` verbatim so the
     LLM echoes it back in the response and we can regex it out."""
     lines: List[str] = []
-    for c in comments:
-        cid = c.get("id") or c.get("comment_id") or "?"
+    prefix = "H" if side == "human" else "A"
+    for i, c in enumerate(comments):
+        cid = c.get("id") or c.get("comment_id") or f"{prefix}{i+1}"
         if side == "human":
             text = (c.get("text", "") or "").strip()
         else:
@@ -96,13 +101,15 @@ def _call_single_chunk(
         example_ai_id=ai_ids[0],
     )
 
-    budget = min(32000, max(4000, chunk_pairs * 12))
+    budget = min(32000, max(4000, chunk_pairs * 25 + 40 * len(actual_chunk)))
     logger.debug(
         "_call_single_chunk[%d]: %d human × %d AI = %d pairs (budget=%d)",
         chunk_idx, len(actual_chunk), len(ai_slice), chunk_pairs, budget,
     )
     try:
         raw = llm_client.complete(system_prompt, user_msg, max_tokens=budget)
+    except FatalLLMError:
+        raise
     except Exception as e:
         raise RuntimeError(
             f"Batch alignment LLM call failed for chunk {chunk_idx} "
@@ -113,6 +120,12 @@ def _call_single_chunk(
     sub_matrix, n_parsed = _parse_batch_similarity_matrix(
         raw, human_ids_chunk, ai_ids,
     )
+    if n_parsed == 0:
+        raise RuntimeError(
+            f"Batch alignment chunk {chunk_idx}: parsed 0 / {chunk_pairs} "
+            f"similarity lines from the LLM response "
+            f"(starts with: {(raw or '')[:200]!r})."
+        )
     logger.debug(
         "_call_single_chunk[%d]: parsed %d / %d similarity lines",
         chunk_idx, n_parsed, chunk_pairs,
@@ -152,10 +165,13 @@ def _parse_batch_similarity_matrix(
 
     # Tokens can start with ``-`` so ``-C8`` is captured (compacted IDs).
     # The score group accepts a float 0..1 or a percent (normalized later).
+    # A row may start with a table pipe, a bullet, or an "N." prefix, and
+    # each token may be wrapped in bold or backticks.
     row_pat = re.compile(
-        r"(?:^|\n)\s*\**\s*([A-Za-z][\w\-]*|-C\d+)\**\s*[|,\s]+\**\s*"
-        r"([A-Za-z][\w\-]*|-C\d+)\**\s*[|,\s]+\**\s*"
-        r"(\d*\.\d+|\d+(?:\.\d*)?)\**",
+        r"(?:^|\n)\s*(?:\|\s*|[-+*]\s+|\d+[.)]\s+)?[*`]*\s*"
+        r"([A-Za-z][\w\-]*|-C\d+)[*`]*\s*[|,\s]+[*`]*\s*"
+        r"([A-Za-z][\w\-]*|-C\d+)[*`]*\s*[|,\s]+[*`]*\s*"
+        r"(\d*\.\d+|\d+(?:\.\d*)?)[*`]*",
         re.MULTILINE,
     )
 
@@ -240,6 +256,7 @@ def align_comments_batch_llm(
     run_dir: Optional[Any] = None,
     on_chunk_done: Optional[Callable[[int, int, int], None]] = None,
     chunk_stagger_s: float = 0.0,
+    max_concurrent: int = LLMConfig.max_concurrent,
 ) -> Dict[str, Any]:
     """Align human comments to AI comments using parallel chunked LLM calls.
 
@@ -257,13 +274,17 @@ def align_comments_batch_llm(
     if len(actual) > max_comments_per_side:
         logger.warning(
             "Human review has %d comments; truncating to %d for batch "
-            "alignment. Raise max_comments_per_side if the model supports it.",
+            "alignment (%d dropped). Raise max_comments_per_side if the "
+            "model supports it.",
             len(actual), max_comments_per_side,
+            len(actual) - max_comments_per_side,
         )
     if len(ai) > max_comments_per_side:
         logger.warning(
-            "AI review has %d comments; truncating to %d for batch alignment.",
-            len(ai), max_comments_per_side,
+            "AI review has %d comments; truncating to %d for batch "
+            "alignment (%d dropped; persona stats cover only the aligned "
+            "comments).",
+            len(ai), max_comments_per_side, len(ai) - max_comments_per_side,
         )
     actual_slice = actual[:max_comments_per_side]
     ai_slice = ai[:max_comments_per_side]
@@ -271,12 +292,12 @@ def align_comments_batch_llm(
     if not actual_slice:
         return {"hits": [], "misses": [], "false_alarms": list(ai_slice),
                 "n_actual": 0, "n_ai": len(ai_slice),
-                "n_strengths": 0, "llm_comparison": None,
+                "llm_comparison": None,
                 "aligner": "batch-llm"}
     if not ai_slice:
         return {"hits": [], "misses": list(actual_slice), "false_alarms": [],
                 "n_actual": len(actual_slice), "n_ai": 0,
-                "n_strengths": 0, "llm_comparison": None,
+                "llm_comparison": None,
                 "aligner": "batch-llm"}
 
     # Precompute AI side once — shared across all chunks.
@@ -300,7 +321,7 @@ def align_comments_batch_llm(
         getattr(llm_client, "model", "?"),
     )
 
-    # Fan out: one parallel LLM call per chunk.
+    # Fan out: one LLM call per chunk, at most max_concurrent at once.
     # chunk_stagger_s > 0 spreads submissions to avoid bursting all requests
     # simultaneously (needed for claude_sdk which is rate-limited per session).
     # Chunks still run concurrently — only the *start* times are spread out.
@@ -310,6 +331,10 @@ def align_comments_batch_llm(
         for ci, chunk in enumerate(chunks):
             if ci > 0 and chunk_stagger_s > 0:
                 time.sleep(chunk_stagger_s)
+            # Stop once a submitted chunk has failed; as_completed below
+            # re-raises its exception.
+            if any(f.done() and f.exception() is not None for f in futures):
+                break
             fut = pool.submit(
                 _call_single_chunk,
                 chunk, ai_slice, ai_ids, ai_block,
@@ -320,18 +345,23 @@ def align_comments_batch_llm(
 
     # Use as_completed so on_chunk_done fires as each chunk finishes,
     # enabling live progress reporting without waiting for the slowest.
-    with ThreadPoolExecutor(max_workers=n_chunks) as pool:
+    with ThreadPoolExecutor(max_workers=min(n_chunks, max_concurrent)) as pool:
         future_to_ci = _submit_staggered(pool, chunks)
         # Preserve chunk order for matrix assembly.
         chunk_results: List[Optional[Tuple[np.ndarray, str, int, str]]] = \
             [None] * n_chunks
         chunks_done = 0
-        for fut in as_completed(future_to_ci):
-            ci = future_to_ci[fut]
-            chunk_results[ci] = fut.result()
-            chunks_done += 1
-            if on_chunk_done:
-                on_chunk_done(chunks_done, n_chunks, ci)
+        try:
+            for fut in as_completed(future_to_ci):
+                ci = future_to_ci[fut]
+                chunk_results[ci] = fut.result()
+                chunks_done += 1
+                if on_chunk_done:
+                    on_chunk_done(chunks_done, n_chunks, ci)
+        except Exception:
+            # Drop queued chunks instead of running them before raising.
+            pool.shutdown(wait=False, cancel_futures=True)
+            raise
 
     # Assemble full N×M matrix row-by-row from each chunk's sub-matrix.
     sims = np.zeros((len(actual_slice), len(ai_slice)), dtype=np.float32)
@@ -347,7 +377,19 @@ def align_comments_batch_llm(
             f"## Chunk {ci + 1} / {n_chunks} "
             f"(human rows {start + 1}–{end})"
         )
-        raw_parts.append(f"{chunk_header}\n\n{raw_i}")
+        chunk_pairs = len(chunks[ci]) * len(ai_slice)
+        if n_i < chunk_pairs:
+            logger.warning(
+                "Batch alignment chunk %d / %d is incomplete: parsed %d / %d "
+                "similarity lines; missing pairs score 0.",
+                ci + 1, n_chunks, n_i, chunk_pairs,
+            )
+            raw_parts.append(
+                f"{chunk_header}: ⚠ INCOMPLETE, parsed {n_i} / "
+                f"{chunk_pairs} lines\n\n{raw_i}"
+            )
+        else:
+            raw_parts.append(f"{chunk_header}\n\n{raw_i}")
         user_msg_parts.append(f"{chunk_header}\n\n{user_msg_i}")
 
     raw = "\n\n---\n\n".join(raw_parts)
@@ -401,11 +443,10 @@ def align_comments_batch_llm(
                 "primary_ai": ai_slice[top_idx],
                 "primary_sim": top_sim,
                 "supporting_ai": supporting,
-                "n_supporting_reviewers": 1 + len(supporting),
                 "llm_verdict": verdict,
                 "llm_rationale":
                     f"batch LLM similarity = {top_sim:.2f} "
-                    f"({'≥' if verdict == 'same' else '≥'} "
+                    f"(≥ "
                     f"{BATCH_SAME_THR if verdict == 'same' else BATCH_PARTIAL_THR:.2f})",
             })
         else:
@@ -447,7 +488,6 @@ def align_comments_batch_llm(
         "false_alarms": false_alarms,
         "n_actual": len(actual_slice),
         "n_ai": len(ai_slice),
-        "n_strengths": 0,
         "aligner": "batch-llm",
         "llm_comparison": {
             "summary": (f"Batch LLM similarity over {total} pairs "
@@ -488,7 +528,8 @@ def _write_batch_artifacts(
 
     ``alignment_ranking.md``
         Human comments ranked by their best-match similarity, highest
-        first.
+        first. Computed from the parsed similarity matrix, not from the
+        LLM's own ranking section.
 
     Provenance is not prepended to these debugging artifacts — the
     validation run's metadata banner lives only on
@@ -497,11 +538,10 @@ def _write_batch_artifacts(
     rd = pathlib.Path(run_dir)
     rd.mkdir(parents=True, exist_ok=True)
 
-    def _h_id(h: Dict[str, Any]) -> str:
-        return str(h.get("id") or h.get("comment_id") or "?")
-
-    def _a_id(a: Dict[str, Any]) -> str:
-        return str(a.get("id") or a.get("comment_id") or "?")
+    h_ids = [str(h.get("id") or h.get("comment_id") or f"H{i+1}")
+             for i, h in enumerate(actual_slice)]
+    a_ids = [str(a.get("id") or a.get("comment_id") or f"A{j+1}")
+             for j, a in enumerate(ai_slice)]
 
     total = len(actual_slice) * len(ai_slice)
 
@@ -510,10 +550,8 @@ def _write_batch_artifacts(
         status = "✓"
     elif pct >= 80.0:
         status = "⚠ partial"
-    elif n_parsed > 0:
-        status = "⚠ degraded"
     else:
-        status = "✗ PARSE FAILED — inspect the response below; the matrix is all zeros"
+        status = "⚠ degraded"
 
     analysis_lines = [
         "# Batch LLM alignment — raw analysis",
@@ -527,8 +565,8 @@ def _write_batch_artifacts(
         "This is the verbatim response from the LLM when asked to produce "
         "pairwise similarity scores for every (human, AI) comment pair. "
         "The similarity matrix in `alignment_similarities.md` is parsed "
-        "from the 'Similarity scores' section below; the ranking file "
-        "comes from the 'Ranked human comments' section.",
+        "from the 'Similarity scores' section below; the ranking in "
+        "`alignment_ranking.md` is computed from that matrix.",
         "",
         "---",
         "",
@@ -564,7 +602,7 @@ def _write_batch_artifacts(
         "below both, the human comment is a miss.",
         "",
     ]
-    header = "| human \\\\ AI | " + " | ".join(_a_id(a) for a in ai_slice) + " | best |"
+    header = "| human \\\\ AI | " + " | ".join(a_ids) + " | best |"
     sep = "|" + "---|" * (len(ai_slice) + 2)
     sim_lines.append(header)
     sim_lines.append(sep)
@@ -576,7 +614,7 @@ def _write_batch_artifacts(
             val = f"{float(row[j]):.2f}"
             cells.append(f"**{val}**" if j == best_j else val)
         best_val = f"{float(row[best_j]):.2f}" if best_j >= 0 else "n/a"
-        sim_lines.append("| " + _h_id(h) + " | " + " | ".join(cells)
+        sim_lines.append("| " + h_ids[hi] + " | " + " | ".join(cells)
                          + f" | {best_val} |")
     sim_lines += ["", "## Verdict per human comment", "",
                   "| human | best AI | sim | verdict |", "|---|---|---|---|"]
@@ -591,8 +629,8 @@ def _write_batch_artifacts(
         else:
             verdict = "missed"
         sim_lines.append(
-            f"| {_h_id(h)} | "
-            f"{_a_id(ai_slice[best_j]) if best_j >= 0 else 'n/a'} | "
+            f"| {h_ids[hi]} | "
+            f"{a_ids[best_j] if best_j >= 0 else 'n/a'} | "
             f"{best_sim:.2f} | {verdict} |"
         )
     (rd / "alignment_similarities.md").write_text("\n".join(sim_lines))
@@ -602,7 +640,7 @@ def _write_batch_artifacts(
         row = sims[hi]
         best_j = int(row.argmax()) if len(row) else -1
         best_sim = float(row[best_j]) if best_j >= 0 else 0.0
-        rank_entries.append((best_sim, h, ai_slice[best_j] if best_j >= 0 else None))
+        rank_entries.append((best_sim, h_ids[hi], a_ids[best_j] if best_j >= 0 else None))
     rank_entries.sort(key=lambda t: -t[0])
 
     rank_lines = [
@@ -625,7 +663,7 @@ def _write_batch_artifacts(
         else:
             verdict = "missed"
         rank_lines.append(
-            f"| {i} | {_h_id(h)} | {_a_id(a) if a else 'n/a'} | "
+            f"| {i} | {h} | {a or 'n/a'} | "
             f"{sim:.2f} | {verdict} |"
         )
     (rd / "alignment_ranking.md").write_text("\n".join(rank_lines))
@@ -644,6 +682,7 @@ def align_comments(
     run_dir: Optional[Any] = None,
     on_chunk_done: Optional[Callable[[int, int, int], None]] = None,
     chunk_stagger_s: float = 0.0,
+    max_concurrent: int = LLMConfig.max_concurrent,
 ) -> Dict[str, Any]:
     """Align human comments to AI comments via parallel chunked LLM calls.
 
@@ -658,4 +697,5 @@ def align_comments(
         run_dir=run_dir,
         on_chunk_done=on_chunk_done,
         chunk_stagger_s=chunk_stagger_s,
+        max_concurrent=max_concurrent,
     )

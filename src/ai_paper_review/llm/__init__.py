@@ -11,8 +11,8 @@ Modules:
                        env-var overrides) + ``SUPPORTED_PROVIDERS``.
   - ``clients/``     — concrete provider clients, one per file:
                        ``base`` (Protocol), ``anthropic``, ``openai``
-                       (also serves xai / github / openai_compatible),
-                       ``google``, ``copilot``.
+                       (also serves openai_compatible), ``xai``,
+                       ``google``, ``copilot``, ``claude``.
   - ``retrying``     — ``RetryClient`` wrapper with exponential backoff.
   - ``factory``      — ``make_client`` / ``default_client`` — turn a
                        config into a ready LLMClient.

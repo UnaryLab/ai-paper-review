@@ -158,6 +158,8 @@ def _rehydrate_jobs_from_disk() -> int:
             launched_at = ui_state.get("launched_at", "")
         except Exception as e:
             logger.warning("Could not parse %s: %s", ui_state_json, e)
+            run_status = "error"
+            run_message = f"Could not read _ui_state.json: {e}"
 
         # Even if _ui_state.json claims "done", verify required output
         # files exist — they could have been deleted manually. Downgrade

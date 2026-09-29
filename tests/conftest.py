@@ -25,6 +25,9 @@ def isolated_config(tmp_path, monkeypatch):
     for env in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY",
                 "GEMINI_API_KEY", "GOOGLE_API_KEY", "XAI_API_KEY"):
         monkeypatch.delenv(env, raising=False)
+    # Keep the claude_sdk probe from running the real `claude` CLI.
+    from ai_paper_review.llm import probing
+    monkeypatch.setattr(probing, "_claude_cli_path", lambda: None)
     monkeypatch.chdir(tmp_path)
     return tmp_path
 
@@ -67,10 +70,6 @@ def mock_llm_for_fixtures():
       - Reviewer_qFvT-C1 ↔ R001-C1 (novelty): 0.85 → ``same``
       - Reviewer_qFvT-C2 ↔ R004-C1 (evaluation): 0.82 → ``same``
       - R017-C1 / R017-C2 have no good human match → false alarms.
-
-    The strength-contradiction detection for R017-C1 (which contradicts the
-    "clean and well-engineered" strength) is handled by an embedding
-    post-pass inside ``align_comments_batch_llm``, not by the LLM itself.
     """
     # Scripted scores, keyed by (human_id, ai_id). Pairs not listed → 0.05.
     scores = {

@@ -23,7 +23,7 @@ dependencies:
   # Single source of truth; this avoids drift between here and
   # pyproject.toml. Installing with -e means edits to src/ take effect
   # without reinstalling. Every LLM SDK (including the Copilot provider's
-  # SDK and MarkItDown) ships in the default install — no extras to
-  # remember.
+  # SDK and MarkItDown) ships in the default install; the `[dev]` extra
+  # adds the test and lint tools (pytest, pyflakes).
   - pip:
-      - -e .
+      - -e .[dev]

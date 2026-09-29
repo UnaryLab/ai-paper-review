@@ -34,8 +34,10 @@ logger = logging.getLogger("review_system")
 
 REVIEWER_HEADER_RE = re.compile(r"^####\s+(R\d{3})\s+—\s+(.+?)\s*$", re.MULTILINE)
 FIELD_RE = re.compile(r"^-\s+\*\*(.+?):\*\*\s+(.+?)\s*$", re.MULTILINE)
+# The prompt body can hold nested fenced blocks (the output template), so
+# the prompt runs to the last closing fence in the reviewer's block.
 SYSTEM_PROMPT_RE = re.compile(
-    r"-\s+\*\*System Prompt:\*\*\s*\n+```text\n(.*?)\n```",
+    r"-\s+\*\*System Prompt:\*\*\s*\n+```text\n(.*)\n```",
     re.DOTALL,
 )
 # Locate the validation attribution-tables YAML block. The section can
@@ -85,6 +87,29 @@ class ReviewerDatabase:
     tables: AttributionTables
 
 
+def _cut_at_rule_line(block: str) -> str:
+    """Return ``block`` up to its first ``---`` line outside a fence.
+
+    Every line that starts with a fence marker flips the fence state, so
+    a ``---`` line in the prompt body is kept and one inside a fenced
+    block nested in the prompt ends the block. If the scan ends inside a
+    fence (unclosed or indented outer fence), the block is cut at its
+    first line that is exactly ``---`` instead.
+    """
+    in_fence = False
+    pos = 0
+    lines = block.split("\n")
+    for line in lines:
+        if line.startswith("```"):
+            in_fence = not in_fence
+        elif not in_fence and line.rstrip(" \t") == "---":
+            return block[:pos]
+        pos += len(line) + 1
+    if in_fence and "---" in lines:
+        return "\n".join(lines[:lines.index("---")]) + "\n"
+    return block
+
+
 def _parse_reviewers(text: str, path: str | Path) -> List[Reviewer]:
     header_matches = list(REVIEWER_HEADER_RE.finditer(text))
     n = len(header_matches)
@@ -109,7 +134,7 @@ def _parse_reviewers(text: str, path: str | Path) -> List[Reviewer]:
         persona = m.group(2).strip()
         start = m.end()
         end = header_matches[i + 1].start() if i + 1 < len(header_matches) else len(text)
-        block = text[start:end]
+        block = _cut_at_rule_line(text[start:end])
 
         sp_match = SYSTEM_PROMPT_RE.search(block)
         if not sp_match:

@@ -13,8 +13,8 @@ API (``messages.stream``). The Anthropic SDK refuses non-streaming
 (computed from ``max_tokens`` times a slow-model per-token latency),
 which trips on the validator's batch-similarity call (up to 32 K
 output tokens on Opus / extended thinking). Streaming bypasses that
-ceiling; we concatenate deltas and return the full text, same shape
-as the non-streaming path.
+ceiling; the client reads the final message and returns its text,
+same shape as the non-streaming path.
 """
 from __future__ import annotations
 
@@ -22,11 +22,40 @@ import base64
 from pathlib import Path
 from typing import Optional
 
+from .base import ReplyBlockedError
+
 
 # Above this budget, use ``messages.stream`` to avoid the SDK's
 # 10-minute non-streaming ceiling. Picked conservatively — Opus at
 # ~40 tok/s finishes 16 K tokens in ~6.7 min, comfortably below 10.
 _STREAMING_MAX_TOKENS_THRESHOLD = 16000
+
+
+def _nonstreaming_limit(model: str) -> int:
+    """Largest max_tokens sent without streaming. The SDK also refuses
+    non-streaming calls above its per-model cap (8192 for Opus 4.0 / 4.1)."""
+    try:
+        from anthropic._constants import MODEL_NONSTREAMING_TOKENS
+    except ImportError:
+        return _STREAMING_MAX_TOKENS_THRESHOLD
+    return min(_STREAMING_MAX_TOKENS_THRESHOLD,
+               MODEL_NONSTREAMING_TOKENS.get(model, _STREAMING_MAX_TOKENS_THRESHOLD))
+
+
+def _reply_text(msg, max_tokens: int) -> str:
+    """Text of a Messages API reply. Raises ReplyBlockedError when Claude
+    refused, or used the whole budget without text."""
+    if msg.stop_reason == "refusal":
+        raise ReplyBlockedError("Claude refused the request (stop_reason=refusal).")
+    text = "".join(
+        b.text for b in msg.content if getattr(b, "type", None) == "text"
+    )
+    if not text and msg.stop_reason == "max_tokens":
+        raise ReplyBlockedError(
+            f"Claude used up its output budget (max_tokens={max_tokens}) "
+            f"before writing any text; raise max_tokens."
+        )
+    return text
 
 
 class AnthropicClient:
@@ -72,7 +101,7 @@ class AnthropicClient:
             content = user
         messages = [{"role": "user", "content": content}]
 
-        if max_tokens > _STREAMING_MAX_TOKENS_THRESHOLD:
+        if max_tokens > _nonstreaming_limit(self.model):
             return self._complete_streaming(system, messages, max_tokens)
 
         msg = self._client.messages.create(
@@ -81,24 +110,16 @@ class AnthropicClient:
             system=system,
             messages=messages,
         )
-        return "".join(
-            b.text for b in msg.content if getattr(b, "type", None) == "text"
-        )
+        return _reply_text(msg, max_tokens)
 
     def _complete_streaming(self, system, messages, max_tokens: int) -> str:
-        """Stream a high-budget response and return the concatenated text.
-
-        Shape-compatible with the non-streaming path (returns ``str``).
-        The Anthropic SDK's ``messages.stream`` context manager yields
-        text deltas as the server produces them; we join and return.
-        """
-        chunks = []
+        """Stream a high-budget response and return its text, checked the
+        same way as the non-streaming path."""
         with self._client.messages.stream(
             model=self.model,
             max_tokens=max_tokens,
             system=system,
             messages=messages,
         ) as stream:
-            for text in stream.text_stream:
-                chunks.append(text)
-        return "".join(chunks)
+            msg = stream.get_final_message()
+        return _reply_text(msg, max_tokens)

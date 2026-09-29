@@ -37,14 +37,15 @@ abstraction:
        into the AI-review schema) is part of the same pipeline.
   - ``ai_paper_review.aggregation`` — post-pipeline cross-paper
        reporter. Rolls up many ``calibration_delta.json`` files into
-       tuning recommendations for the reviewer database. Reachable
-       from ``/aggregate`` in the web UI; importable for scripted
-       use. No CLI.
+       tuning recommendations for the reviewer database. CLI
+       ``ai-paper-review-aggregate``; also reachable from
+       ``/aggregation`` in the web UI.
   - ``ai_paper_review.llm``         — provider-agnostic LLM client.
        Submodules: ``config`` (``LLMConfig``, ``load_config``),
        ``factory`` (``make_client``), ``probing`` (UI helpers),
        ``utils``, ``retrying`` (``RetryClient``), and ``clients/``
-       (one module per provider — anthropic, openai, google, copilot).
+       (one module per provider: anthropic, claude, copilot, google,
+       openai, xai).
   - ``ai_paper_review.web``         — Flask UI (``ai-paper-review-web``).
 
 Each pipeline package's submodules are the canonical import targets —

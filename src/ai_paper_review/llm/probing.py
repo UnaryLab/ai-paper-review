@@ -20,11 +20,17 @@ absent.
 """
 from __future__ import annotations
 
+import json
 import logging
+import os
+import shutil
+import subprocess
 import sys
+import time
 from typing import Any, Dict, Optional
 
-from .config import _ENV_FALLBACK, LLMConfig, load_config
+from .clients.claude import CLI_ENV_OVERRIDES
+from .config import LLMConfig, key_env_vars, load_config
 from .utils import is_local_provider
 
 logger = logging.getLogger("llm_client")
@@ -35,7 +41,6 @@ _PROVIDER_LABELS = {
     "openai_api":            "OpenAI (GPT)",
     "google_api":            "Google (Gemini)",
     "xai_api":               "xAI (Grok)",
-    "github_api":            "GitHub Models (PAT)",
     "copilot_sdk":           "GitHub Copilot (Python SDK)",
     "claude_sdk":            "Claude Agent (Python SDK)",
     "openai_compatible_api": "OpenAI-compatible (Ollama / Together / Azure / …)",
@@ -46,13 +51,15 @@ _PROVIDER_LABELS = {
 # so the kind is visible at a glance in the dropdown.
 _UI_PROVIDERS = (
     "anthropic_api", "openai_api", "google_api", "xai_api",
-    "github_api", "claude_sdk", "copilot_sdk",
+    "claude_sdk", "copilot_sdk",
     "openai_compatible_api",
 )
 
 
 _SDK_PROBE_LOGGED = False
-_CLAUDE_SDK_PROBE_LOGGED = False
+_CLAUDE_SDK_PROBE_LOGGED = ""
+_CLAUDE_SDK_READY = False
+_CLAUDE_SDK_FAILED_AT = float("-inf")  # time.monotonic() of the last False
 
 
 def _copilot_sdk_installed() -> bool:
@@ -99,36 +106,73 @@ def _copilot_sdk_installed() -> bool:
         return False
 
 
-def _claude_sdk_installed() -> bool:
-    """Check if the Claude Agent SDK is importable.
+def _claude_cli_path() -> Optional[str]:
+    """The CLI the SDK runs, found with the SDK's own lookup: its bundled
+    binary, ``claude`` on PATH, then the usual install locations. If that
+    private lookup fails for any other reason, falls back to
+    ``shutil.which("claude")``."""
+    from claude_agent_sdk import ClaudeAgentOptions, CLINotFoundError
+    try:
+        from claude_agent_sdk._internal.transport.subprocess_cli import (
+            SubprocessCLITransport,
+        )
+        return SubprocessCLITransport("", ClaudeAgentOptions())._find_cli()
+    except CLINotFoundError:
+        return None
+    except Exception as e:
+        logger.debug("SDK CLI lookup failed, using shutil.which: %s", e)
+        return shutil.which("claude")
 
-    Mirrors ``_copilot_sdk_installed`` — uses ``importlib.util.find_spec``
-    so a probe can't trigger the SDK's init side effects and doesn't
-    leave a dangling import. Returns False silently on the first miss,
-    with a one-time log line so users know where to install.
+
+def _claude_sdk_installed() -> bool:
+    """Check that claude_sdk can run: the SDK is importable, the Claude
+    Code CLI is found, and ``claude auth status --json`` reports
+    ``loggedIn``.
+
+    Uses ``importlib.util.find_spec`` so a probe can't trigger the SDK's
+    init side effects. The auth check runs with the same env overrides
+    as :class:`ClaudeSDKClient`, so it reports the login the SDK will
+    use. A True result is kept for the life of the process; a False
+    result is kept for 30 seconds and then checked again, so a later
+    ``claude auth login`` shows up without a restart. Each distinct
+    reason for False is logged once.
     """
-    global _CLAUDE_SDK_PROBE_LOGGED
+    global _CLAUDE_SDK_READY, _CLAUDE_SDK_PROBE_LOGGED, _CLAUDE_SDK_FAILED_AT
+    if _CLAUDE_SDK_READY:
+        return True
+    if time.monotonic() - _CLAUDE_SDK_FAILED_AT < 30:
+        return False
     import importlib.util
 
+    reason = ""
     try:
         if importlib.util.find_spec("claude_agent_sdk") is None:
-            if not _CLAUDE_SDK_PROBE_LOGGED:
-                logger.info(
-                    "claude_sdk provider: `claude_agent_sdk` package not found in %s. "
-                    "Install with `pip install claude-agent-sdk` in the same "
-                    "environment used to start the server, then run "
-                    "`claude /login` once.",
-                    sys.executable,
-                )
-                _CLAUDE_SDK_PROBE_LOGGED = True
-            return False
-        return True
-    except (ImportError, ValueError) as e:
-        logger.debug("Claude Agent SDK not importable: %s", e)
-        return False
+            reason = (
+                f"`claude_agent_sdk` package not found in {sys.executable}. "
+                "Install with `pip install claude-agent-sdk` in the same "
+                "environment used to start the server"
+            )
+        elif (cli := _claude_cli_path()) is None:
+            reason = "Claude Code CLI (`claude`) not found"
+        else:
+            proc = subprocess.run(
+                [cli, "auth", "status", "--json"],
+                capture_output=True, text=True, timeout=10,
+                env={**os.environ, **CLI_ENV_OVERRIDES},
+            )
+            if not json.loads(proc.stdout).get("loggedIn"):
+                reason = "Claude Code CLI is not logged in; run `claude auth login`"
     except Exception as e:
-        logger.warning("Unexpected error probing Claude Agent SDK: %s", e)
+        reason = f"could not check the Claude Code login ({type(e).__name__}: {e})"
+
+    if reason:
+        _CLAUDE_SDK_FAILED_AT = time.monotonic()
+        if reason != _CLAUDE_SDK_PROBE_LOGGED:
+            logger.info("claude_sdk provider not ready: %s", reason)
+            _CLAUDE_SDK_PROBE_LOGGED = reason
         return False
+    _CLAUDE_SDK_READY = True
+    return True
 
 
 def describe_config(cfg: Optional[LLMConfig] = None) -> Dict[str, Any]:
@@ -150,7 +194,7 @@ def describe_config(cfg: Optional[LLMConfig] = None) -> Dict[str, Any]:
     if cfg.review_provider == "copilot_sdk":
         active_key_source = "Copilot CLI auth" if _copilot_sdk_installed() else "SDK not installed"
     elif cfg.review_provider == "claude_sdk":
-        active_key_source = "Claude Code CLI auth" if _claude_sdk_installed() else "SDK not installed"
+        active_key_source = "Claude Code CLI auth" if _claude_sdk_installed() else "SDK not installed or CLI not logged in"
     else:
         active_key_source = (
             "config.yaml" if cfg.api_keys.get(cfg.review_provider)
@@ -166,10 +210,11 @@ def describe_config(cfg: Optional[LLMConfig] = None) -> Dict[str, Any]:
         "config_path":         cfg.config_path,
         "providers_configured": configured,
         "active_key_source": active_key_source,
-        "request_delay":    cfg.request_delay,
+        "request_delay":    cfg.request_delay_for(cfg.review_provider),
         "max_retries":      cfg.max_retries,
         "retry_base_delay": cfg.retry_base_delay,
         "max_concurrent":   cfg.max_concurrent,
+        "max_tokens":       cfg.review_max_tokens,
     }
 
 
@@ -214,7 +259,8 @@ def probe_providers(cfg: Optional[LLMConfig] = None) -> list:
             creds_source = "Claude Code CLI auth" if creds_ok else ""
             creds_reason = (
                 "" if creds_ok
-                else "SDK not installed — run: pip install claude-agent-sdk"
+                else "SDK not installed or CLI not logged in; run: "
+                     "pip install claude-agent-sdk, then claude auth login"
             )
         elif p == "openai_compatible_api" and is_local_provider(cfg, p):
             auth_kind = "local_server"
@@ -229,10 +275,10 @@ def probe_providers(cfg: Optional[LLMConfig] = None) -> list:
                 creds_reason = ""
             else:
                 creds_source = ""
-                envs = " or ".join(_ENV_FALLBACK.get(p, [])) or "(none)"
+                envs = " or ".join(key_env_vars(p, base_url))
                 creds_reason = (
-                    f"no API key — set api_keys.{p} in config.yaml, "
-                    f"or export {envs}"
+                    f"no API key — set api_keys.{p} in config.yaml"
+                    + (f", or export {envs}" if envs else "")
                 )
 
         configured = creds_ok and has_config
@@ -256,7 +302,7 @@ def probe_providers(cfg: Optional[LLMConfig] = None) -> list:
             "key_source": key_source,
             "unavailable_reason": unavailable_reason,
             "is_review_default": (p == cfg.review_provider),
-            "env_vars": _ENV_FALLBACK.get(p, []),
+            "env_vars": key_env_vars(p, base_url),
             "base_url": base_url or "",
             "review_model": cfg.review_model if p == cfg.review_provider else "",
         })

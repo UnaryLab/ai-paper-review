@@ -116,11 +116,7 @@ EXTRACTION RULES
    - `minor` — "minor", "nit", "typo", "small", "wording", "suggestion",
      "clarification" — non-blocking improvements.
 
-8. **Category.** Pick the single best match from: novelty, methodology,
-   related work, evaluation, theory, industry/practical, scalability,
-   performance, energy, reproducibility, clarity, benchmark, hardware,
-   integration, security, cost, deployment, formal, cross-disciplinary,
-   vision.
+8. **Category.** Pick the single best match from: {category_vocab}.
 
 9. **Overall Recommendation.** Normalize free-text ratings to the
    vocabulary:

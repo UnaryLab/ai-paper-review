@@ -251,6 +251,7 @@ def test_no_prompt_ever_asks_an_llm_for_json():
 
     targets = list(src_root.rglob("*.py"))
     targets += list(docs_root.rglob("*.md"))
+    targets += list((src_root / "prompts").glob("*.md"))
     if readme.exists():
         targets.append(readme)
 

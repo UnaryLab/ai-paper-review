@@ -32,9 +32,7 @@ def now_iso() -> str:
 def humanize_duration(seconds: float) -> str:
     """Render a seconds count as a short human-readable duration.
 
-    Shared with the validation reporter's body so the duration string
-    in the prepended block matches the duration string in the report
-    body exactly.
+    Used by :func:`format_provenance` for the run-duration line.
     """
     if seconds < 1.0:
         return f"{seconds*1000:.0f}ms"
