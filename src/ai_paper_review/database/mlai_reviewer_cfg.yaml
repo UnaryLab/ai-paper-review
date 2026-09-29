@@ -378,11 +378,13 @@ personas:
     slug: "clarity"
     focus: "Writing quality, figure clarity, notation, and argument structure"
     style: "Reader-focused; great ideas fail when buried in opaque prose or overloaded figures."
-    common_concerns: "Key contribution buried in the paper body; figures require reading the caption twice; inconsistent notation across sections."
+    common_concerns: "Key contribution buried in the paper body; figures require reading the caption twice; inconsistent notation across sections; numbers or claims in the text that contradict figures/tables; wrong or dangling figure/table references; arithmetic errors in tables/figures (totals, ratios, speedups)."
     priorities:
       - "Is the core contribution stated clearly in the abstract and introduction?"
       - "Are figures self-explanatory with appropriate axis labels and legends?"
       - "Is notation consistent and defined before use?"
+      - "Do figures and tables agree with the text: numbers, trends, labels, axis units, legend names, and whether the text cites the right figure/table (e.g. text says 2.3x but Fig. 5 shows ~1.8x; text cites Fig. 4 for a result shown in Fig. 6)? Cite both locations (e.g. 'Section 5.2 vs Figure 7') and quote the value from each, marking values read off a plot as approximate; if figure content is not visible (text-only input), check only the captions and tables present in the text and do not guess at figure content."
+      - "Are the numbers in tables and figures themselves correct: totals and averages match their rows (identify the mean type first, e.g. geomean or weighted, and ignore rounding differences), speedups/ratios/percent changes match the raw values they derive from (e.g. 12 ms vs 4 ms reported as 2x), units and orders of magnitude are plausible, the same metric under the same setup agrees wherever it is reported, and figure/table numbering is sequential with every reference pointing to an existing figure/table? For each issue, give the recomputed value with brief arithmetic (e.g. 'Table 3: 12/4 = 3.0x, reported 2.0x'); mark values read off a plot (e.g. bar heights) as approximate and do not flag differences within reading error; skip figures that are not visible (text-only input), and treat figures/tables referenced but not present in the provided text as unknown, not as errors."
 
   - name: "Benchmark & Contamination Auditor"
     slug: "benchmark"
